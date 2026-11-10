@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listMarkdown, resolveFile } from "./files.ts";
+import { listMarkdown, resolveFile, resolveWritable } from "./files.ts";
 
 let base: string;
 let root: string;
@@ -18,6 +18,7 @@ beforeAll(async () => {
   }
   await writeFile(join(base, "secreto.md"), "secreto");
   await symlink(join(base, "secreto.md"), join(root, "enlace.md"));
+  await symlink(join(base, "no-existe.md"), join(root, "roto.md"));
 });
 
 afterAll(() => rm(base, { recursive: true, force: true }));
@@ -53,4 +54,28 @@ test("rechaza rutas ocultas, inexistentes o inválidas", async () => {
   expect(await status("sub")).toBe(404);
   expect(await status(null)).toBe(400);
   expect(await status("a\0.md")).toBe(400);
+});
+
+const writableStatus = (path: string | null) =>
+  resolveWritable(root, path).then(
+    () => 200,
+    (error) => error.status,
+  );
+
+test("resuelve rutas para escribir, exista o no el archivo", async () => {
+  expect(await resolveWritable(root, "sub/nuevo.md")).toBe(join(root, "sub", "nuevo.md"));
+  await writeFile(join(root, "sub", "nuevo.md"), "x");
+  expect(await resolveWritable(root, "sub/nuevo.md")).toBe(join(root, "sub", "nuevo.md"));
+});
+
+test("no permite escribir fuera del raíz ni en carpetas ocultas", async () => {
+  expect(await writableStatus("../fuera.md")).toBe(403);
+  expect(await writableStatus(join(base, "fuera.md"))).toBe(403);
+  expect(await writableStatus("enlace.md")).toBe(403);
+  expect(await writableStatus("roto.md")).toBe(403);
+  expect(await writableStatus(".oculta/nuevo.md")).toBe(404);
+  expect(await writableStatus("nada/nuevo.md")).toBe(404);
+  expect(await writableStatus("sub")).toBe(404);
+  expect(await writableStatus(null)).toBe(400);
+  expect(await writableStatus("a\0.md")).toBe(400);
 });

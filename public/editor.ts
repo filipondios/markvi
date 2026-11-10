@@ -8,6 +8,8 @@ import { oneDark } from "@codemirror/theme-one-dark";
 export interface EditorSession {
   view: EditorView;
   setDark(dark: boolean): void;
+  /** Sustituye el documento conservando (o moviendo) el cursor. */
+  setDoc(doc: string, cursor?: number): void;
   destroy(): void;
 }
 
@@ -72,6 +74,13 @@ export function createEditor(
     view,
     setDark: (dark) => {
       view.dispatch({ effects: theme.reconfigure([editorTheme, ...(dark ? [oneDark] : [])]) });
+    },
+    setDoc: (doc, cursor = view.state.selection.main.head) => {
+      const position = Math.max(0, Math.min(cursor, doc.length));
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: doc },
+        selection: { anchor: position },
+      });
     },
     destroy: () => view.destroy(),
   };

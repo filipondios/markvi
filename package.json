@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "start": "bun run server.ts",
+    "build": "bun build --compile ./server.ts --outfile dist/markvi",
     "test": "bun test",
     "typecheck": "bun check"
   },

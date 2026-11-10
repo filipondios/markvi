@@ -7,9 +7,13 @@ import { parseStoredTabs, serializeTabs, type TabMode } from "./tabstore.ts";
 const content = document.querySelector<HTMLElement>("#content")!;
 const crumb = document.querySelector<HTMLElement>("#path")!;
 const modeButton = document.querySelector<HTMLButtonElement>("#mode")!;
-const dirtyIndicator = document.querySelector<HTMLElement>("#dirty")!;
 const tabBar = document.querySelector<HTMLElement>("#tabs")!;
 const bar = document.querySelector<HTMLElement>("#bar")!;
+const statusBar = document.querySelector<HTMLElement>("#status")!;
+const statusMode = document.querySelector<HTMLElement>("#status-mode")!;
+const statusState = document.querySelector<HTMLElement>("#status-state")!;
+const statusMessage = document.querySelector<HTMLElement>("#status-message")!;
+const statusActions = document.querySelector<HTMLElement>("#status-actions")!;
 const themePreference = matchMedia("(prefers-color-scheme: dark)");
 
 type Mode = TabMode;
@@ -28,6 +32,24 @@ interface Tab {
   cursor: number;
   loaded: boolean;
   error?: string;
+  /** ETag del contenido en disco; detecta cambios externos al guardar. */
+  etag?: string;
+  /** El archivo cambió o desapareció en disco mientras había cambios locales. */
+  conflict?: "changed" | "deleted";
+}
+
+interface DiskEvent {
+  type: "change" | "delete";
+  path: string;
+}
+
+class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
 }
 
 const STORAGE_KEY = "markvi:tabs";
@@ -56,8 +78,8 @@ function currentPath() {
 async function api(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(body?.error ?? `Error ${response.status}`);
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new ApiError(response.status, body?.error ?? `Error ${response.status}`);
   }
   return response;
 }
@@ -136,8 +158,115 @@ function restoreTabs() {
   }
 }
 
-function syncBarHeight() {
+function syncLayoutMetrics() {
   document.documentElement.style.setProperty("--bar-height", `${bar.offsetHeight}px`);
+  document.documentElement.style.setProperty("--status-height", `${statusBar.offsetHeight}px`);
+}
+
+type StatusTone = "ok" | "warn" | "error";
+
+interface StatusAction {
+  label: string;
+  run: () => void;
+}
+
+let transient: { message: string; tone: StatusTone } | undefined;
+let transientTimer: ReturnType<typeof setTimeout> | undefined;
+
+function notify(message: string, tone: StatusTone = "ok", timeout = 4000) {
+  if (transientTimer !== undefined) clearTimeout(transientTimer);
+  transient = { message, tone };
+  transientTimer =
+    timeout > 0
+      ? setTimeout(() => {
+          transient = undefined;
+          transientTimer = undefined;
+          renderStatus();
+        }, timeout)
+      : undefined;
+  renderStatus();
+}
+
+function statusActionsFor(tab: Tab): StatusAction[] {
+  if (tab.conflict === "changed") {
+    return [
+      { label: "Recargar", run: () => void reloadTab(tab, { discard: true }) },
+      { label: "Sobrescribir", run: () => void saveDraft(tab, { force: true }) },
+    ];
+  }
+  if (tab.conflict === "deleted") {
+    const actions: StatusAction[] = [
+      { label: "Recrear archivo", run: () => void recreateTab(tab) },
+    ];
+    actions.push(
+      tab.dirty
+        ? { label: "Descartar cambios", run: () => discardChanges(tab) }
+        : { label: "Cerrar pestaña", run: () => closeTab(tab) },
+    );
+    return actions;
+  }
+  if (tab.error) {
+    return [{ label: "Reintentar", run: () => void showTab(tab) }];
+  }
+  return [];
+}
+
+function renderStatusActions(actions: StatusAction[]) {
+  statusActions.replaceChildren(
+    ...actions.map((action) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.addEventListener("click", () => {
+        action.run();
+        editor?.view.focus();
+      });
+      return button;
+    }),
+  );
+}
+
+function renderStatus() {
+  const tab = active;
+  statusMode.textContent = tab ? (editor ? "Edición" : "Vista") : "Índice";
+
+  let state = "Listo";
+  let tone: StatusTone = "ok";
+  let message = "";
+
+  if (tab) {
+    if (tab.conflict === "changed") {
+      state = "Conflicto";
+      tone = "warn";
+      message = "El archivo cambió en disco.";
+    } else if (tab.conflict === "deleted") {
+      state = "Archivo borrado";
+      tone = "error";
+      message = "El archivo ya no existe.";
+    } else if (tab.error) {
+      state = "Error";
+      tone = "error";
+      message = tab.error;
+    } else if (tab.dirty) {
+      state = "Sin guardar";
+      tone = "warn";
+    } else {
+      state = "Guardado";
+    }
+  }
+
+  if (transient) {
+    message = transient.message;
+    tone = transient.tone;
+  }
+
+  statusState.textContent = state;
+  statusState.dataset.tone = tone;
+  statusMessage.textContent = message;
+  statusMessage.dataset.tone = tone;
+  statusMessage.title = message;
+
+  renderStatusActions(tab ? statusActionsFor(tab) : []);
 }
 
 function renderTabs() {
@@ -149,6 +278,7 @@ function renderTabs() {
     item.dataset.path = tab.path;
     item.classList.toggle("is-active", tab === active);
     item.classList.toggle("is-dirty", tab.dirty);
+    item.classList.toggle("is-conflict", !!tab.conflict);
 
     const link = document.createElement("a");
     link.className = "tab-link";
@@ -181,7 +311,7 @@ function renderTabs() {
   }
 
   tabBar.replaceChildren(fragment);
-  syncBarHeight();
+  syncLayoutMetrics();
 }
 
 function syncTabState() {
@@ -190,16 +320,13 @@ function syncTabState() {
     if (!tab) continue;
     item.classList.toggle("is-active", tab === active);
     item.classList.toggle("is-dirty", tab.dirty);
+    item.classList.toggle("is-conflict", !!tab.conflict);
     item.querySelector(".tab-link")?.setAttribute("aria-selected", String(tab === active));
   }
 }
 
-function updateDirty() {
+function updateChrome() {
   const tab = active;
-  const dirty = tab?.dirty ?? false;
-  dirtyIndicator.textContent = dirty ? "Sin guardar" : "Guardado";
-  dirtyIndicator.classList.toggle("is-dirty", dirty);
-
   const editing = !!editor;
   modeButton.textContent = editing ? "Vista" : "Editar";
   modeButton.setAttribute("aria-pressed", String(editing));
@@ -207,7 +334,8 @@ function updateDirty() {
   modeButton.title = editing ? "Volver a vista (Esc)" : "Editar (e)";
   modeButton.disabled = !tab || !editable;
 
-  document.title = tab ? `${dirty ? "● " : ""}${tab.path} · markvi` : "markvi";
+  document.title = tab ? `${tab.dirty ? "● " : ""}${tab.path} · markvi` : "markvi";
+  renderStatus();
 }
 
 function setTheme() {
@@ -242,7 +370,7 @@ function enterEditor(tab: Tab) {
     onChange(value) {
       tab.draft = value;
       tab.dirty = value !== tab.raw;
-      updateDirty();
+      updateChrome();
       syncTabState();
     },
     onSave: () => void saveDraft(tab),
@@ -250,41 +378,210 @@ function enterEditor(tab: Tab) {
   });
 
   setTheme();
-  updateDirty();
+  updateChrome();
   syncTabState();
   persistTabs();
 }
 
-async function saveDraft(tab: Tab) {
-  if (tab !== active || !editor) return;
+async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
+  if (tab !== active || !editor) return false;
 
   const text = editor.view.state.doc.toString();
-  const cursor = editor.view.state.selection.main.head;
   tab.draft = text;
-  tab.cursor = cursor;
+  tab.cursor = editor.view.state.selection.main.head;
+
+  const headers: Record<string, string> = { "Content-Type": "text/plain; charset=utf-8" };
+  if (tab.etag && !options.force) headers["If-Match"] = tab.etag;
 
   try {
-    await api(`/api/file?path=${encodeURIComponent(tab.path)}`, {
+    const response = await api(`/api/file?path=${encodeURIComponent(tab.path)}`, {
+      method: "PUT",
+      headers,
+      body: text,
+    });
+
+    tab.raw = text;
+    tab.dirty = false;
+    tab.etag = response.headers.get("etag") ?? undefined;
+    tab.conflict = undefined;
+    tab.loaded = true;
+    tab.error = undefined;
+
+    updateChrome();
+    syncTabState();
+    persistTabs();
+    notify("Guardado en disco", "ok", 2500);
+    return true;
+  } catch (error) {
+    handleSaveError(tab, error);
+    return false;
+  }
+}
+
+// Escribe el contenido actual aunque el archivo ya no exista en disco.
+async function recreateTab(tab: Tab) {
+  const text = tab === active && editor ? editor.view.state.doc.toString() : tab.draft;
+
+  try {
+    const response = await api(`/api/file?path=${encodeURIComponent(tab.path)}&create=1`, {
       method: "PUT",
       headers: { "Content-Type": "text/plain; charset=utf-8" },
       body: text,
     });
+
     tab.raw = text;
-    tab.dirty = tab.draft !== tab.raw;
-    if (tab === active) updateDirty();
-    syncTabState();
+    tab.draft = text;
+    tab.dirty = false;
+    tab.loaded = true;
+    tab.error = undefined;
+    tab.conflict = undefined;
+    tab.etag = response.headers.get("etag") ?? undefined;
+
+    if (tab === active) {
+      if (editor) {
+        editor.setDoc(text);
+      } else {
+        editable = true;
+        content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+      }
+      updateChrome();
+      renderTabs();
+    } else {
+      syncTabState();
+    }
+
     persistTabs();
+    notify("Archivo recreado", "ok", 2500);
+    return true;
   } catch (error) {
-    alert(`No se pudo guardar: ${error instanceof Error ? error.message : String(error)}`);
-    if (tab === active) editor?.view.focus();
+    handleSaveError(tab, error);
+    return false;
   }
+}
+
+function handleSaveError(tab: Tab, error: unknown) {
+  const status = error instanceof ApiError ? error.status : 0;
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (status === 409) {
+    tab.conflict = "changed";
+    notify("El archivo cambió en disco: recarga o sobrescribe.", "warn", 0);
+  } else if (status === 404) {
+    tab.conflict = "deleted";
+    tab.etag = undefined;
+    notify("El archivo ya no existe: puedes recrearlo con tus cambios.", "error", 0);
+  } else if (status === 403) {
+    notify(message, "error", 0);
+  } else {
+    notify(`No se pudo guardar: ${message}`, "error", 0);
+  }
+
+  if (tab === active) editor?.view.focus();
+  updateChrome();
+  syncTabState();
+}
+
+async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
+  if (tab.dirty && !options.discard) return false;
+
+  // Si la pestaña activa tenía una carga en curso, esta recarga manda: se
+  // invalida la petición anterior para que no pinte contenido viejo al llegar.
+  const id = tab === active ? ++request : undefined;
+
+  try {
+    const file = await loadFile(tab.path);
+    if (id !== undefined && id !== request) return false;
+
+    tab.raw = file.text;
+    tab.draft = file.text;
+    tab.etag = file.etag;
+    tab.dirty = false;
+    tab.loaded = true;
+    tab.error = undefined;
+    tab.conflict = undefined;
+
+    if (tab === active) {
+      if (editor) {
+        editor.setDoc(tab.draft);
+      } else {
+        editable = true;
+        const scroll = scrollY;
+        content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+        scrollTo(0, scroll);
+      }
+      updateChrome();
+      renderTabs();
+    } else {
+      syncTabState();
+    }
+
+    persistTabs();
+    notify(
+      options.discard ? "Cambios descartados y archivo recargado" : "Recargado desde disco",
+      "ok",
+      2500,
+    );
+    return true;
+  } catch (error) {
+    const missing = error instanceof ApiError && error.status === 404;
+    const message = error instanceof Error ? error.message : String(error);
+    tab.etag = undefined;
+
+    if (missing) {
+      tab.conflict = "deleted";
+      if (!tab.dirty) {
+        tab.loaded = false;
+        tab.error = "Archivo no encontrado.";
+        if (tab === active && !editor) {
+          content.replaceChildren(element("p", tab.error, "error"));
+          editable = false;
+        }
+      }
+      if (tab === active) notify("El archivo se borró en disco.", "error", 0);
+    } else if (tab === active) {
+      notify(`No se pudo recargar: ${message}`, "error", 0);
+    }
+
+    updateChrome();
+    syncTabState();
+    return false;
+  }
+}
+
+function discardChanges(tab: Tab) {
+  const wasDeleted = tab.conflict === "deleted";
+  if (tab === active && editor) leaveEditor();
+
+  tab.mode = "view";
+  tab.draft = tab.raw;
+  tab.dirty = false;
+  tab.conflict = undefined;
+
+  if (wasDeleted) {
+    tab.loaded = false;
+    tab.etag = undefined;
+    tab.error = "Archivo no encontrado.";
+  }
+
+  if (tab === active) {
+    editable = !wasDeleted;
+    if (wasDeleted) content.replaceChildren(element("p", tab.error!, "error"));
+    else content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+    updateChrome();
+    renderTabs();
+  } else {
+    syncTabState();
+  }
+
+  persistTabs();
+  notify("Cambios descartados", "ok", 2500);
 }
 
 async function exitEditor(tab: Tab) {
   if (tab !== active || !editor) return;
 
-  await saveDraft(tab);
-  if (tab !== active || !editor || tab.dirty) return;
+  const saved = await saveDraft(tab);
+  if (!saved || tab !== active || !editor) return;
 
   tab.mode = "view";
   leaveEditor();
@@ -314,7 +611,11 @@ function buildIndex(files: string[]) {
 
 async function loadFile(path: string) {
   const response = await api(`/api/file?path=${encodeURIComponent(path)}`);
-  return response.text();
+  return { text: await response.text(), etag: response.headers.get("etag") ?? undefined };
+}
+
+async function readText(path: string) {
+  return (await loadFile(path)).text;
 }
 
 function pushUrl(url: URL | string) {
@@ -360,7 +661,7 @@ async function showIndex() {
   editable = false;
   content.classList.remove("editing");
   crumb.textContent = "";
-  updateDirty();
+  updateChrome();
   renderTabs();
 
   let nodes: Node;
@@ -383,21 +684,25 @@ async function showTab(tab: Tab, scroll?: number) {
   editable = false;
   content.classList.remove("editing");
   crumb.textContent = tab.path;
-  updateDirty();
+  updateChrome();
   renderTabs();
 
   if (!tab.loaded) {
     try {
-      const source = await loadFile(tab.path);
+      const file = await loadFile(tab.path);
       if (id !== request) return;
-      tab.raw = source;
-      if (!tab.dirty) tab.draft = source;
+      tab.raw = file.text;
+      tab.etag = file.etag;
+      if (!tab.dirty) tab.draft = file.text;
       tab.loaded = true;
       tab.error = undefined;
+      tab.conflict = undefined;
     } catch (error) {
       if (id !== request) return;
       tab.error = error instanceof Error ? error.message : String(error);
       tab.loaded = false;
+      tab.etag = undefined;
+      if (error instanceof ApiError && error.status === 404) tab.conflict = "deleted";
     }
   }
 
@@ -406,7 +711,7 @@ async function showTab(tab: Tab, scroll?: number) {
   if (tab.error) {
     content.replaceChildren(element("p", tab.error, "error"));
     editable = false;
-    updateDirty();
+    updateChrome();
     renderTabs();
     return;
   }
@@ -418,7 +723,7 @@ async function showTab(tab: Tab, scroll?: number) {
   }
 
   content.replaceChildren(renderMarkdown(tab.draft, tab.path));
-  updateDirty();
+  updateChrome();
   renderTabs();
 
   if (scroll !== undefined) scrollTo(0, scroll);
@@ -570,12 +875,108 @@ function restoreFromUrl() {
   void showTab(tab);
 }
 
+let indexRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleIndexRefresh() {
+  if (indexRefreshTimer !== undefined) return;
+  indexRefreshTimer = setTimeout(() => {
+    indexRefreshTimer = undefined;
+    void refreshIndex();
+  }, 200);
+}
+
+async function refreshIndex() {
+  if (active) return;
+
+  try {
+    const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
+    const shown = [...content.querySelectorAll<HTMLAnchorElement>(".files a")].map(
+      (link) => link.textContent ?? "",
+    );
+    if (shown.length === files.length && shown.every((file, index) => file === files[index])) {
+      return;
+    }
+
+    const scroll = scrollY;
+    content.replaceChildren(buildIndex(files));
+    scrollTo(0, scroll);
+    notify("Índice actualizado", "ok", 2000);
+  } catch {
+    // Si el árbol falla se mantiene el índice anterior.
+  }
+}
+
+async function handleDiskChange(event: DiskEvent) {
+  if (!active) scheduleIndexRefresh();
+
+  const affected = tabs.filter(
+    (tab) => tab.path === event.path && (tab.loaded || tab === active),
+  );
+
+  for (const tab of affected) {
+    if (tab.dirty) {
+      // Un evento puede ser solo un cambio de permisos o de fecha: se compara
+      // el contenido con el último guardado antes de declarar un conflicto.
+      let type = event.type;
+      if (type === "change") {
+        const current = await loadFile(tab.path).catch(() => null);
+        if (current) {
+          if (current.text === tab.raw) continue;
+        } else {
+          type = "delete";
+        }
+      }
+
+      tab.conflict = type === "delete" ? "deleted" : "changed";
+      if (type === "delete") tab.etag = undefined;
+      if (tab === active) {
+        notify(
+          type === "delete"
+            ? "El archivo se borró en disco. Tienes cambios sin guardar."
+            : "El archivo cambió en disco. Tienes cambios sin guardar.",
+          "warn",
+          0,
+        );
+        updateChrome();
+      }
+      syncTabState();
+      continue;
+    }
+
+    await reloadTab(tab);
+  }
+}
+
+function connectEvents() {
+  const source = new EventSource("/api/events");
+
+  // Al conectar (o reconectar) se revisa el índice: puede haberse perdido algún
+  // evento entre la carga inicial y la apertura del flujo.
+  source.addEventListener("open", () => {
+    if (!active) void refreshIndex();
+  });
+
+  source.addEventListener("message", (message) => {
+    let event: unknown;
+    try {
+      event = JSON.parse(message.data);
+    } catch {
+      return;
+    }
+    if (!event || typeof event !== "object") return;
+
+    const { type, path } = event as { type?: unknown; path?: unknown };
+    if ((type !== "change" && type !== "delete") || typeof path !== "string") return;
+    void handleDiskChange({ type, path });
+  });
+}
+
 const finder = createFinder({
   async list() {
     const response = await api("/api/tree");
     return ((await response.json()) as { files: string[] }).files;
   },
-  read: loadFile,
+  read: readText,
   open(path) {
     openInNewTab(path);
   },
@@ -676,12 +1077,15 @@ history.scrollRestoration = "manual";
 
 restoreTabs();
 renderTabs();
-syncBarHeight();
+syncLayoutMetrics();
+connectEvents();
 
 if (typeof ResizeObserver !== "undefined") {
-  new ResizeObserver(syncBarHeight).observe(bar);
+  const observer = new ResizeObserver(syncLayoutMetrics);
+  observer.observe(bar);
+  observer.observe(statusBar);
 } else {
-  window.addEventListener("resize", syncBarHeight);
+  window.addEventListener("resize", syncLayoutMetrics);
 }
 
 const initialPath = currentPath();

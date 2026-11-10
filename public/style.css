@@ -8,6 +8,7 @@
   --surface: #f6f8fa;
   --link: #0969da;
   --error: #cf222e;
+  --warn: #9a6700;
 
   --hl-keyword: #cf222e;
   --hl-string: #0a3069;
@@ -28,6 +29,7 @@
     --surface: #151b23;
     --link: #4493f8;
     --error: #f85149;
+    --warn: #d29922;
 
     --hl-keyword: #ff7b72;
     --hl-string: #a5d6ff;
@@ -50,6 +52,7 @@ html {
 
 body {
   margin: 0;
+  padding-bottom: var(--status-height, 1.9rem);
   background: var(--bg);
   color: var(--fg);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -139,6 +142,11 @@ a:hover {
 .tab.is-dirty .tab-link::before {
   color: var(--error);
   content: "● ";
+}
+
+.tab.is-conflict .tab-link::after {
+  color: var(--error);
+  content: " ⚠";
 }
 
 .tab-close {
@@ -387,19 +395,6 @@ pre code {
   margin-left: auto;
 }
 
-#dirty {
-  color: var(--muted);
-  font-size: 0.875rem;
-  min-width: 7rem;
-  text-align: right;
-  text-wrap: nowrap;
-}
-
-#dirty.is-dirty {
-  color: var(--error);
-  font-weight: 600;
-}
-
 button#mode {
   background: var(--surface);
   color: var(--fg);
@@ -432,10 +427,92 @@ button#mode:disabled {
 
 #content.editing {
   max-width: none;
-  height: calc(100dvh - var(--bar-height, 2.6rem));
+  height: calc(100dvh - var(--bar-height, 2.6rem) - var(--status-height, 1.9rem));
   padding: 0;
   overflow: hidden;
   overflow-wrap: normal;
+}
+
+#status {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 3;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  min-height: 1.9rem;
+  padding: 0.2rem 1rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-size: 0.78rem;
+}
+
+#status-mode {
+  color: var(--fg);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+#status-state {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#status-state::before {
+  content: "· ";
+}
+
+#status-state[data-tone="warn"] {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+#status-state[data-tone="error"] {
+  color: var(--error);
+  font-weight: 600;
+}
+
+#status-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status-message[data-tone="warn"] {
+  color: var(--warn);
+}
+
+#status-message[data-tone="error"] {
+  color: var(--error);
+}
+
+#status-actions {
+  display: flex;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+#status-actions:empty {
+  display: none;
+}
+
+#status-actions button {
+  padding: 0.1rem 0.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+
+#status-actions button:hover {
+  border-color: var(--fg);
 }
 
 body.finder-open {

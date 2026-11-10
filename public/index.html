@@ -13,13 +13,18 @@
         <a href="/">markvi</a>
         <span id="path"></span>
         <div id="actions">
-          <span id="dirty" aria-live="polite">Guardado</span>
           <button id="mode" type="button" aria-label="Editar (e)" title="Editar (e)">Editar</button>
         </div>
       </div>
       <div id="tabs" role="tablist" aria-label="Pestañas" hidden></div>
     </header>
     <main id="content"></main>
+    <footer id="status" role="status" aria-live="polite">
+      <span id="status-mode">Índice</span>
+      <span id="status-state">Listo</span>
+      <span id="status-message"></span>
+      <span id="status-actions"></span>
+    </footer>
     <script type="module" src="./app.ts"></script>
   </body>
 </html>
