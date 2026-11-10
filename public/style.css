@@ -45,7 +45,7 @@
 }
 
 html {
-  scroll-padding-top: 3.5rem;
+  scroll-padding-top: var(--bar-height, 3.5rem);
 }
 
 body {
@@ -69,19 +69,91 @@ a:hover {
 #bar {
   position: sticky;
   top: 0;
-  z-index: 1;
-  display: flex;
-  gap: 0.75rem;
-  align-items: baseline;
-  padding: 0.5rem 1rem;
+  z-index: 2;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   font-size: 0.875rem;
 }
 
-#bar a {
+#bar-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.5rem 1rem;
+}
+
+#bar-row > a {
   color: var(--fg);
   font-weight: 600;
+}
+
+#tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 0.5rem 0.4rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+#tabs[hidden] {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  max-width: 16rem;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.tab:hover {
+  background: var(--surface);
+}
+
+.tab.is-active {
+  color: var(--fg);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.tab-link {
+  min-width: 0;
+  padding: 0.2rem 0.5rem;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-link:hover {
+  text-decoration: none;
+}
+
+.tab.is-active .tab-link {
+  font-weight: 600;
+}
+
+.tab.is-dirty .tab-link::before {
+  color: var(--error);
+  content: "● ";
+}
+
+.tab-close {
+  flex: 0 0 auto;
+  padding: 0 0.4rem 0 0.1rem;
+  background: none;
+  color: var(--muted);
+  border: 0;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: var(--error);
 }
 
 #path {
@@ -360,7 +432,7 @@ button#mode:disabled {
 
 #content.editing {
   max-width: none;
-  height: calc(100dvh - 2.6rem);
+  height: calc(100dvh - var(--bar-height, 2.6rem));
   padding: 0;
   overflow: hidden;
   overflow-wrap: normal;
