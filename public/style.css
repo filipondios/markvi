@@ -365,3 +365,166 @@ button#mode:disabled {
   overflow: hidden;
   overflow-wrap: normal;
 }
+
+body.finder-open {
+  overflow: hidden;
+}
+
+.finder-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 1rem 1rem;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.finder-backdrop[hidden] {
+  display: none;
+}
+
+.finder {
+  display: flex;
+  flex-direction: column;
+  width: min(70rem, 100%);
+  max-height: 80vh;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+}
+
+.finder-search {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.finder-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  outline: none;
+  font: inherit;
+  font-size: 1.05rem;
+}
+
+.finder-count {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.finder-body {
+  display: grid;
+  grid-template-columns: minmax(16rem, 2fr) minmax(0, 3fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.finder-results {
+  margin: 0;
+  padding: 0.35rem;
+  overflow-y: auto;
+  list-style: none;
+  border-right: 1px solid var(--border);
+  min-height: 0;
+}
+
+.finder-result {
+  display: flex;
+  padding: 0.3rem 0.6rem;
+  overflow: hidden;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.finder-result.is-selected {
+  background: color-mix(in srgb, var(--link) 18%, transparent);
+}
+
+.finder-dir {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+}
+
+.finder-name {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.finder-match {
+  color: var(--link);
+  font-weight: 700;
+  background: none;
+}
+
+.finder-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.finder-preview-title {
+  padding: 0.5rem 1rem;
+  overflow: hidden;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finder-preview-title:empty {
+  display: none;
+}
+
+.finder-preview-body {
+  flex: 1;
+  padding: 0.75rem 1rem 2rem;
+  overflow-y: auto;
+  overflow-wrap: break-word;
+  font-size: 0.9rem;
+}
+
+.finder-preview-body > :first-child {
+  margin-top: 0;
+}
+
+.finder-preview-body a {
+  pointer-events: none;
+}
+
+.finder-hint {
+  padding: 0.4rem 1rem;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 720px) {
+  .finder-backdrop {
+    padding-top: 4vh;
+  }
+
+  .finder-body {
+    grid-template-columns: 1fr;
+  }
+
+  .finder-preview {
+    display: none;
+  }
+}

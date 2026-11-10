@@ -1,4 +1,6 @@
 import { createEditor, type EditorSession } from "./editor.ts";
+import { createFinder } from "./finder.ts";
+import { createLeader } from "./keys.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
 
 const content = document.querySelector<HTMLElement>("#content")!;
@@ -18,8 +20,6 @@ let dirty = false;
 let bodyScroll = 0;
 let savedPosition = 0;
 const positions = new Map<string, number>();
-let leaderPending = false;
-let leaderTimer = 0;
 
 function currentPath() {
   if (!location.pathname.startsWith(VIEW_PREFIX)) return null;
@@ -158,6 +158,30 @@ async function loadFile(path: string) {
   return response.text();
 }
 
+const finder = createFinder({
+  async list() {
+    const response = await api("/api/tree");
+    return ((await response.json()) as { files: string[] }).files;
+  },
+  read: loadFile,
+  open(path) {
+    navigate(new URL(viewUrl(path), location.origin));
+  },
+});
+
+function moveFile(delta: number) {
+  const links = [...document.querySelectorAll<HTMLAnchorElement>("#content a[href^='/view/']")];
+  const index = links.findIndex((link) => link.pathname === location.pathname);
+  const next = links[index + delta];
+  if (next) navigate(new URL(next.href));
+}
+
+const leader = createLeader([
+  { keys: ["f"], run: () => finder.open() },
+  { keys: ["ArrowLeft"], run: () => moveFile(-1) },
+  { keys: ["ArrowRight"], run: () => moveFile(1) },
+]);
+
 function scrollToHash() {
   const encoded = location.hash.slice(1);
   let id = encoded;
@@ -255,31 +279,29 @@ window.addEventListener("beforeunload", (event) => {
   event.returnValue = "";
 });
 
+function isTypingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (finder.isOpen) return;
+
   const target = event.target;
   const inEditor = editor?.view.dom.contains(target as Node) ?? false;
-  if (inEditor || (target instanceof HTMLElement && target.isContentEditable)) return;
+  if (inEditor || isTypingTarget(target)) return;
 
-  if (leaderPending) {
-    leaderPending = false;
-    clearTimeout(leaderTimer);
-    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
-      const links = [...document.querySelectorAll<HTMLAnchorElement>("#content a[href^='/view/']")];
-      const index = links.findIndex((link) => link.pathname === location.pathname);
-      const next = links[index + (event.key === "ArrowRight" ? 1 : -1)];
-      if (next) {
-        event.preventDefault();
-        navigate(new URL(next.href));
-      }
-    }
+  if (leader.active) {
+    event.preventDefault();
+    leader.feed(event.key);
     return;
   }
 
-  if (event.key === " " && !editor) {
-    leaderPending = true;
-    leaderTimer = window.setTimeout(() => { leaderPending = false; }, 800);
+  if (event.key === " ") {
     event.preventDefault();
+    leader.start();
     return;
   }
 
