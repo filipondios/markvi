@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>markvi</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header id="bar">
+      <a href="/">markvi</a>
+      <span id="path"></span>
+      <div id="actions">
+        <span id="dirty" aria-live="polite">Guardado</span>
+        <button id="mode" type="button" aria-label="Editar (e)" title="Editar (e)">Editar</button>
+      </div>
+    </header>
+    <main id="content"></main>
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>
