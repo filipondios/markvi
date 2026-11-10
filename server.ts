@@ -1,10 +1,13 @@
 import { realpath, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import index from "./public/index.html";
 import { createRoutes } from "./src/api.ts";
+import { createFileWatcher } from "./src/watch.ts";
 
-const USAGE = "Uso: bun run server.ts <directorio> [--port <puerto>]";
+const command =
+  Bun.argv[1] && !Bun.argv[1].endsWith(".ts") ? basename(Bun.argv[1]) : "bun run server.ts";
+const USAGE = `Uso: ${command} <directorio> [--port <puerto>]`;
 const HOSTNAME = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 
@@ -49,16 +52,19 @@ function resolvePort(value: string | undefined) {
 const { values, positionals } = readArgs();
 const root = await resolveRoot(positionals);
 const port = resolvePort(values.port);
+const watcher = createFileWatcher(root);
 
 function startServer() {
   try {
     return Bun.serve({
       hostname: HOSTNAME,
       port,
+      // El flujo SSE queda abierto: debe durar más que el latido (25 s).
+      idleTimeout: 60,
       routes: {
         "/": index,
         "/view/*": index,
-        ...createRoutes(root, port),
+        ...createRoutes(root, port, watcher),
       },
       fetch() {
         return new Response("No encontrado", { status: 404 });
@@ -73,6 +79,14 @@ function startServer() {
 }
 
 const server = startServer();
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    watcher.close();
+    server.stop(true);
+    process.exit(0);
+  });
+}
 
 console.log(`markvi sirviendo ${root}`);
 console.log(`→ ${server.url}`);
