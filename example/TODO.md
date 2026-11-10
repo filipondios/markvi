@@ -54,13 +54,13 @@ App local para navegar, renderizar y editar archivos `.md` de un directorio, con
 
 ## Fase 4: Buscador de archivos (`espacio + f`, estilo Telescope)
 
-- [ ] Sistema de "tecla líder" (`espacio`) con secuencias de teclas
-- [ ] Modal centrado con campo de búsqueda
-- [ ] Búsqueda difusa (fuzzy) sobre la lista de archivos
-- [ ] Navegar resultados con flechas / `Ctrl+j` / `Ctrl+k`
-- [ ] Panel de preview del archivo seleccionado (render o texto)
-- [ ] `Enter` abre el archivo, `Esc` cierra el modal
-- [ ] Resaltar en los resultados los caracteres que coinciden
+- [x] Sistema de "tecla líder" (`espacio`) con secuencias de teclas
+- [x] Modal centrado con campo de búsqueda
+- [x] Búsqueda difusa (fuzzy) sobre la lista de archivos
+- [x] Navegar resultados con flechas / `Ctrl+j` / `Ctrl+k`
+- [x] Panel de preview del archivo seleccionado (render o texto)
+- [x] `Enter` abre el archivo, `Esc` cierra el modal
+- [x] Resaltar en los resultados los caracteres que coinciden
 
 ## Fase 5: Pestañas
 
@@ -99,6 +99,7 @@ App local para navegar, renderizar y editar archivos `.md` de un directorio, con
 2. **Guardado:** con `Ctrl+S` y automáticamente al pulsar `Esc`.
 3. **Alcance:** el directorio raíz se pasa como argumento al arrancar la app.
 4. **Dependencias:** se permiten librerías (`marked`, `DOMPurify`, CodeMirror 6, un buscador fuzzy como `fuse.js` o `fzf-for-js`).
+5. **Buscador:** tecla líder `espacio` + `f`; búsqueda difusa propia (sin dependencia extra), preview renderizado, `Enter` abre y `Esc` cierra. `espacio + ←/→` sigue cambiando de archivo desde el índice.
 
 ---
 

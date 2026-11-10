@@ -4,7 +4,7 @@ Visor/editor local de Markdown con Bun. Plan y fases en `TODO.md`. Mantener este
 
 ## Estado
 
-Fases 0–3 hechas. Siguiente: Fase 4 (buscador de archivos).
+Fases 0–4 hechas. Siguiente: Fase 5 (pestañas).
 
 ## Uso
 
@@ -20,6 +20,7 @@ Prueba: `bun run server.ts ./example`
 
 - `server.ts`: entrada única. Parsea CLI, valida y arranca `Bun.serve`.
 - `public/index.html`, `app.ts`, `render.ts`, `style.css`: SPA de lectura, render Markdown y navegación.
+- `public/keys.ts`, `public/finder.ts`, `public/fuzzy.ts`: tecla líder, modal buscador y búsqueda difusa; `public/*.test.ts`: pruebas Bun.
 - `src/api.ts`, `src/files.ts`: API y resolución segura de rutas; `src/*.test.ts`: pruebas Bun.
 - `example/`: notas, subdirectorio, imagen y enlaces de ejemplo.
 
@@ -35,6 +36,9 @@ Prueba: `bun run server.ts ./example`
 
 - `index.html` se importa en `server.ts` (`import index from "./public/index.html"`): Bun empaqueta el TS/CSS que enlaza y lo sirve en `/_bun/*`. No hay paso de build ni carpeta de estáticos servida a mano.
 - `app.ts`: índice, render de archivo, navegación interna/atrás/adelante bajo `/view/` y modo edición (`e` entra; `Esc` guarda y sale; `Ctrl+S` guarda; aviso en `beforeunload` si hay cambios; conserva scroll y cursor por archivo). El botón «Editar» se desactiva en el índice y en páginas con error.
+- `keys.ts`: tecla líder `espacio` con secuencias. En `app.ts`: `espacio+f` abre el buscador y `espacio+←/→` cambia de archivo desde el índice. No se activa dentro del editor ni de campos de texto.
+- `finder.ts`: modal estilo Telescope (buscador centrado, resultados con caracteres resaltados, preview renderizada, flechas/`Ctrl+j`/`Ctrl+k`, `Enter`/`Esc`). Consulta `/api/tree` al abrir y cachea contenidos para el preview.
+- `fuzzy.ts`: coincidencia por subsecuencia con puntuación por rachas, inicio de palabra y camelCase; smart case. Sin dependencias.
 - `editor.ts`: CodeMirror 6 con resaltado Markdown, números de línea, ajuste de línea y tema claro/oscuro. `Esc`/`Mod-s` van en un `keymap` de alta prioridad.
 - `render.ts`: Marked + marked-highlight/highlight.js, sanitización DOMPurify, checkboxes, IDs y URLs relativas (`/view/` Markdown, `/files/` estáticos).
 - El estado de edición vive en `app.ts` (`rawDocument`, `draft`, `dirty`, `positions`); `editor.ts` solo expone la vista de CodeMirror.
