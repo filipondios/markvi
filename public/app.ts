@@ -2,6 +2,7 @@ import { createEditor, type EditorExitOptions, type EditorSession } from "./edit
 import { createFinder } from "./finder.ts";
 import { createLeader } from "./keys.ts";
 import {
+  interpolateLine,
   lineAtOffset,
   lineStartOffset,
   lineStarts,
@@ -120,6 +121,32 @@ function currentBlock() {
 /** Línea del archivo que cruza la línea de referencia. Reutilizable. */
 function currentSourceLine() {
   return sourceLineAt(blockMap(), referenceY() + scrollY);
+}
+
+/** Bloque bajo un punto de la página; si el punto cae en un hueco, el anterior. */
+function blockAtPoint(clientY: number) {
+  const map = blockMap();
+  const index = pickBlockIndex(map, clientY + scrollY);
+  return index < 0 ? undefined : map[index];
+}
+
+/** Línea del archivo bajo un punto de la página, interpolada dentro del bloque. */
+function lineAtPoint(target: Element | null, clientY: number) {
+  const y = clientY + scrollY;
+  const element = target?.closest<HTMLElement>("[data-line]");
+  if (element && content.contains(element)) {
+    const line = Number(element.dataset.line);
+    const endLine = Number(element.dataset.endLine ?? element.dataset.line);
+    if (Number.isFinite(line) && Number.isFinite(endLine)) {
+      const rect = element.getBoundingClientRect();
+      return interpolateLine(
+        { line, endLine, top: rect.top + scrollY, bottom: rect.bottom + scrollY },
+        y,
+      );
+    }
+  }
+  const block = blockAtPoint(clientY);
+  return block ? interpolateLine(block, y) : undefined;
 }
 
 function updateReadingIndicator() {
@@ -511,14 +538,14 @@ function leaveEditor() {
   content.classList.remove("editing");
 }
 
-function enterEditor(tab: Tab) {
+function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = {}) {
   if (tab !== active || editor || !editable || !tab.loaded || tab.error) return;
 
   const wasView = tab.mode === "view";
   // Desde la vista manda la posición de lectura (o la selección), no el cursor
-  // guardado de la última edición.
-  const cursor = wasView ? readingCursor(tab) : tab.cursor;
-  const screenY = wasView ? referenceY() : undefined;
+  // guardado de la última edición. Un doble clic puede fijar ambas cosas.
+  const cursor = options.cursor ?? (wasView ? readingCursor(tab) : tab.cursor);
+  const screenY = options.screenY ?? (wasView ? referenceY() : undefined);
 
   tab.mode = "edit";
   if (wasView) tab.scroll = scrollY;
@@ -1229,6 +1256,26 @@ document.addEventListener("click", (event) => {
   }
   if (currentPath() === null) openInNewTab(path, url);
   else openInCurrentTab(path, url);
+});
+
+// Doble clic en un bloque: abre el editor en la línea de ese punto y deja el
+// cursor a la misma altura bajo el puntero.
+content.addEventListener("dblclick", (event) => {
+  if (editor || !active || !editable || event.button !== 0) return;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+  const target = event.target instanceof Element ? event.target : null;
+  // Un enlace ya navega con el primer clic; no se abre el editor encima.
+  if (target?.closest("a[href]")) return;
+  const line = lineAtPoint(target, event.clientY);
+  if (line === undefined) return;
+
+  event.preventDefault();
+  window.getSelection()?.removeAllRanges();
+  enterEditor(active, {
+    cursor: cursorForLine(active.draft, line),
+    screenY: event.clientY,
+  });
 });
 
 window.addEventListener("popstate", () => {

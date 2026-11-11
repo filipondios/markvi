@@ -119,6 +119,16 @@ test("elige el bloque correcto arriba, abajo, en un hueco y sin mapa", () => {
   expect(pickBlockIndex(blocks, 65)).toBe(1);
 });
 
+test("interpola la línea y recorta fuera del bloque", () => {
+  const block = { line: 10, endLine: 20, top: 100, bottom: 200 };
+  expect(interpolateLine(block, 100)).toBe(10);
+  expect(interpolateLine(block, 150)).toBe(15);
+  expect(interpolateLine(block, 200)).toBe(20);
+  expect(interpolateLine(block, 50)).toBe(10);
+  expect(interpolateLine(block, 300)).toBe(20);
+  expect(interpolateLine({ ...block, bottom: 100 }, 150)).toBe(10);
+});
+
 test("el bloque anidado gana al contenedor en la misma altura", () => {
   const blocks = [
     { line: 1, endLine: 10, top: 0, bottom: 100 },
