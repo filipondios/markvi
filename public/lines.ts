@@ -125,3 +125,33 @@ export function sourceLineAt(blocks: readonly BlockBox[], y: number): number | u
   const block = blocks[index];
   return block ? interpolateLine(block, y) : undefined;
 }
+
+/** Mueve gradualmente la referencia hacia el borde inferior al agotarse el scroll. */
+export function readingReferenceY(
+  reference: number,
+  viewportBottom: number,
+  scrollTop: number,
+  maxScroll: number,
+): number {
+  if (maxScroll <= 1 || viewportBottom <= reference) return reference;
+  const transition = viewportBottom - reference;
+  const remaining = maxScroll - scrollTop;
+  const progress = Math.min(1, Math.max(0, (transition - remaining) / transition));
+  return reference + transition * progress;
+}
+
+/** Cursor de lectura sincronizado con scroll, con inicio y final progresivos. */
+export function readingBlockIndex(
+  blocks: readonly BlockBox[],
+  y: number,
+  scrollTop: number,
+  maxScroll: number,
+  viewportBottom?: number,
+): number {
+  if (blocks.length === 0) return -1;
+  if (maxScroll <= 1) return pickBlockIndex(blocks, y);
+  const readingY = viewportBottom === undefined
+    ? y
+    : readingReferenceY(y, viewportBottom, scrollTop, maxScroll);
+  return pickBlockIndex(blocks, readingY);
+}

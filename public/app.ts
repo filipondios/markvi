@@ -9,10 +9,12 @@ import {
   lineStartOffset,
   lineStarts,
   pickBlockIndex,
-  sourceLineAt,
+  readingBlockIndex,
+  readingReferenceY,
   type BlockBox,
 } from "./lines.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
+import { createReadingCursor } from "./readingcursor.ts";
 import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
 import { createSelector, highlight } from "./selector.ts";
 import { parseStoredTabs, serializeTabs, tabLabels, type TabMode } from "./tabstore.ts";
@@ -107,12 +109,15 @@ interface HintState {
 
 let blockCache: BlockEntry[] | undefined;
 let readingElement: HTMLElement | undefined;
+const readingCursorState = createReadingCursor();
+let programmaticScrollTarget: number | undefined;
 const readingMarker = document.createElement("span");
 readingMarker.className = "reading-marker";
 readingMarker.textContent = "▸";
 readingMarker.setAttribute("aria-hidden", "true");
 document.body.append(readingMarker);
 let readingFrame = 0;
+let markerTargetY = 0;
 
 const viewNav = createViewNav();
 let searchState: SearchState | undefined;
@@ -150,18 +155,44 @@ function blockMap() {
 
 function invalidateBlocks() {
   blockCache = undefined;
+  readingCursorState.clear();
   if (!readingElement?.isConnected) readingElement = undefined;
 }
 
-function currentBlock() {
-  const map = blockMap();
-  const index = pickBlockIndex(map, referenceY() + scrollY);
-  return index < 0 ? undefined : map[index];
+function readingBlocks() {
+  return navigationBlocks();
 }
 
-/** Línea del archivo que cruza la línea de referencia. Reutilizable. */
+function currentNavigationIndex() {
+  const blocks = readingBlocks();
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  const readingY = readingReferenceY(
+    referenceY() + scrollY,
+    statusBar.getBoundingClientRect().top + scrollY,
+    scrollY,
+    maxScroll,
+  );
+  const index = readingCursorState.current(blocks, readingY, scrollY, maxScroll);
+  return { blocks, index };
+}
+
+function currentBlock() {
+  const { blocks, index } = currentNavigationIndex();
+  return index < 0 ? undefined : blocks[index];
+}
+
+/** Línea fuente del bloque que el cursor de lectura mantiene seleccionado. */
 function currentSourceLine() {
-  return sourceLineAt(blockMap(), referenceY() + scrollY);
+  const block = currentBlock();
+  if (!block) return undefined;
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  const y = readingReferenceY(
+    referenceY() + scrollY,
+    statusBar.getBoundingClientRect().top + scrollY,
+    scrollY,
+    maxScroll,
+  );
+  return interpolateLine(block, Math.min(block.bottom, Math.max(block.top, y)));
 }
 
 /** Bloque bajo un punto de la página; si el punto cae en un hueco, el anterior. */
@@ -199,24 +230,28 @@ function updateReadingIndicator() {
   }
 
   if (!block) {
+    markerTargetY = 0;
     readingMarker.hidden = true;
     return;
   }
 
   const contentRect = content.getBoundingClientRect();
   const blockRect = block.element.getBoundingClientRect();
-  const styles = getComputedStyle(block.element);
-  const lineHeight = Number.parseFloat(styles.lineHeight);
-  const fontSize = Number.parseFloat(styles.fontSize);
+  const viewTop = bar.getBoundingClientRect().bottom + 2;
+  const viewBottom = statusBar.getBoundingClientRect().top - 2;
+  const lineHeight = Number.parseFloat(getComputedStyle(block.element).lineHeight);
+  const fontSize = Number.parseFloat(getComputedStyle(block.element).fontSize);
   const firstLineHeight = Number.isFinite(lineHeight)
     ? lineHeight
     : Number.isFinite(fontSize)
       ? fontSize * 1.65
       : 24;
+  const targetY = blockRect.top < viewTop ? viewTop : Math.min(blockRect.top, viewBottom - firstLineHeight);
 
+  markerTargetY += (targetY - markerTargetY) * 0.15;
   readingMarker.hidden = false;
   readingMarker.style.left = `${contentRect.left + 1}px`;
-  readingMarker.style.transform = `translateY(${blockRect.top + Math.max(0, (firstLineHeight - 18) / 2)}px)`;
+  readingMarker.style.transform = `translateY(${markerTargetY + Math.max(0, (firstLineHeight - 18) / 2)}px)`;
 }
 
 function scheduleReadingIndicator() {
@@ -228,19 +263,44 @@ function scheduleReadingIndicator() {
   });
 }
 
+function sourceBlockIndex(line: number, blocks = navigationBlocks()) {
+  let index = -1;
+  blocks.forEach((block, position) => {
+    if (block.line <= line && line <= block.endLine) index = position;
+  });
+  return index;
+}
+
 /** Desplaza la vista para que `line` quede sobre la línea de referencia. */
 function scrollToSourceLine(line: number) {
-  const map = blockMap();
-  let block: BlockEntry | undefined;
-  for (const candidate of map) {
-    if (candidate.line <= line && line <= candidate.endLine) block = candidate;
-  }
+  const blocks = navigationBlocks();
+  const index = sourceBlockIndex(line, blocks);
+  const block = blocks[index];
   if (!block) return;
 
   const span = block.endLine - block.line;
   const ratio = span > 0 ? (line - block.line) / span : 0;
   const y = block.top + (block.bottom - block.top) * ratio;
-  scrollTo(0, Math.max(0, y - referenceY()));
+  readingCursorState.set(index, blocks.length);
+  const rect = block.element.getBoundingClientRect();
+  const visibleTop = bar.getBoundingClientRect().bottom + 8;
+  const visibleBottom = statusBar.getBoundingClientRect().top - 8;
+  let delta = y - referenceY();
+  if (rect.height <= visibleBottom - visibleTop) {
+    if (rect.top < visibleTop) delta = rect.top - visibleTop;
+    else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
+    else delta = 0;
+  }
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  const target = Math.min(maxScroll, Math.max(0, scrollY + delta));
+  if (Math.abs(scrollY - target) > 1) {
+    programmaticScrollTarget = target;
+    scrollTo(0, target);
+    setTimeout(() => {
+      if (programmaticScrollTarget === target) programmaticScrollTarget = undefined;
+    }, 100);
+  }
+  scheduleReadingIndicator();
 }
 
 function cursorForLine(source: string, line: number) {
@@ -299,64 +359,99 @@ function navigationBlocks() {
   return blocks;
 }
 
-function scrollToBlock(block: BlockEntry) {
-  scrollTo(0, Math.max(0, block.top - referenceY()));
+function scrollToBlock(index: number) {
+  const blocks = navigationBlocks();
+  const block = blocks[index];
+  if (!block) return;
+  readingCursorState.set(index, blocks.length);
+
+  const rect = block.element.getBoundingClientRect();
+  const visibleTop = bar.getBoundingClientRect().bottom + 8;
+  const visibleBottom = statusBar.getBoundingClientRect().top - 8;
+  const visibleHeight = visibleBottom - visibleTop;
+  let delta = 0;
+  if (rect.height > visibleHeight || rect.top < visibleTop) delta = rect.top - visibleTop;
+  else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
+
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  const target = Math.min(maxScroll, Math.max(0, scrollY + delta));
+  if (Math.abs(scrollY - target) > 1) {
+    programmaticScrollTarget = target;
+    scrollTo(0, target);
+    setTimeout(() => {
+      if (programmaticScrollTarget === target) programmaticScrollTarget = undefined;
+    }, 100);
+  }
+  scheduleReadingIndicator();
 }
 
 function moveBlock(delta: number) {
-  const blocks = navigationBlocks();
+  const { blocks, index } = currentNavigationIndex();
   if (blocks.length === 0) return;
-  const current = pickBlockIndex(blocks, referenceY() + scrollY);
-  const next = Math.min(blocks.length - 1, Math.max(0, current + delta));
-  scrollToBlock(blocks[next]!);
+  const next = readingCursorState.set(index + delta, blocks.length);
+  scrollToBlock(next);
 }
 
 function goTop(count?: number) {
+  const blocks = navigationBlocks();
   if (count === undefined) {
-    scrollTo(0, 0);
+    scrollToBlock(0);
     return;
   }
-  const blocks = navigationBlocks();
-  const block = blocks[Math.min(blocks.length, Math.max(1, count)) - 1];
-  if (block) scrollToBlock(block);
+  const index = Math.min(blocks.length, Math.max(1, count)) - 1;
+  scrollToBlock(index);
 }
 
 function goBottom(count?: number) {
+  const blocks = navigationBlocks();
   if (count === undefined) {
-    scrollTo(0, document.documentElement.scrollHeight);
+    scrollToBlock(blocks.length - 1);
     return;
   }
-  const blocks = navigationBlocks();
-  const block = blocks[Math.min(blocks.length, Math.max(1, count)) - 1];
-  if (block) scrollToBlock(block);
+  const index = Math.min(blocks.length, Math.max(1, count)) - 1;
+  scrollToBlock(index);
 }
 
 function halfPage(direction: 1 | -1) {
   const top = bar.getBoundingClientRect().bottom;
   const bottom = statusBar.getBoundingClientRect().top;
-  scrollBy(0, direction * ((bottom - top) / 2));
+  const blocks = navigationBlocks();
+  const { index } = currentNavigationIndex();
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  const targetY = Math.min(maxScroll, Math.max(0, scrollY + direction * ((bottom - top) / 2)));
+  const next = readingBlockIndex(
+    blocks,
+    referenceY() + targetY,
+    targetY,
+    maxScroll,
+    statusBar.getBoundingClientRect().top + targetY,
+  );
+  if (next >= 0 && next !== index) {
+    readingCursorState.set(next, blocks.length);
+    programmaticScrollTarget = targetY;
+    scrollTo(0, targetY);
+    setTimeout(() => {
+      if (programmaticScrollTarget === targetY) programmaticScrollTarget = undefined;
+    }, 100);
+    scheduleReadingIndicator();
+  } else {
+    scrollBy(0, direction * ((bottom - top) / 2));
+  }
 }
 
 function headingElements() {
   return Array.from(content.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"));
 }
 
-function headingIndexAtReference() {
-  const headings = headingElements();
-  const y = referenceY() + scrollY;
-  let index = -1;
-  headings.forEach((heading, position) => {
-    if (heading.getBoundingClientRect().top + scrollY <= y) index = position;
-  });
-  return index;
-}
-
-/** Línea del encabezado que se está leyendo; 1 si aún no hay ninguno. */
 function currentHeadingLine() {
-  const headings = headingElements();
-  const heading = headings[headingIndexAtReference()];
-  const line = heading ? Number(heading.dataset.line) : 1;
-  return Number.isFinite(line) ? line : 1;
+  const block = currentBlock();
+  if (!block) return 1;
+  let line = 1;
+  for (const heading of headingElements()) {
+    const headingLine = Number(heading.dataset.line);
+    if (Number.isFinite(headingLine) && headingLine <= block.endLine) line = headingLine;
+  }
+  return line;
 }
 
 function moveHeading(direction: 1 | -1, count: number) {
@@ -366,10 +461,14 @@ function moveHeading(direction: 1 | -1, count: number) {
     return;
   }
 
-  const index = headingIndexAtReference();
-  const next = Math.min(headings.length - 1, Math.max(0, index + direction * count));
-  const heading = headings[next]!;
-  scrollTo(0, Math.max(0, heading.getBoundingClientRect().top + scrollY - referenceY()));
+  const currentLine = currentSourceLine() ?? 1;
+  let headingIndex = -1;
+  headings.forEach((heading, position) => {
+    if (Number(heading.dataset.line) <= currentLine) headingIndex = position;
+  });
+  const next = Math.min(headings.length - 1, Math.max(0, headingIndex + direction * count));
+  const headingLine = Number(headings[next]!.dataset.line);
+  scrollToSourceLine(headingLine);
 }
 
 function switchTabBy(direction: 1 | -1, count?: number) {
@@ -423,7 +522,24 @@ function paintSearch() {
 
 function scrollToMatch(range: Range) {
   const rect = range.getBoundingClientRect();
-  scrollTo(0, Math.max(0, rect.top + scrollY - referenceY()));
+  const node = range.startContainer;
+  const element = node instanceof Element ? node : node.parentElement;
+  const source = element?.closest<HTMLElement>("[data-line]");
+  if (source) {
+    const blocks = navigationBlocks();
+    let blockIndex = -1;
+    for (const [index, block] of blocks.entries()) {
+      if (block.element.contains(source)) blockIndex = index;
+    }
+    if (blockIndex >= 0) readingCursorState.set(blockIndex, blocks.length);
+  }
+  const target = Math.max(0, rect.top + scrollY - referenceY());
+  programmaticScrollTarget = target;
+  scrollTo(0, target);
+  setTimeout(() => {
+    if (programmaticScrollTarget === target) programmaticScrollTarget = undefined;
+  }, 100);
+  scheduleReadingIndicator();
 }
 
 function searchDocument(query: string, direction: 1 | -1) {
@@ -1608,6 +1724,7 @@ async function showTab(tab: Tab, scroll?: number) {
   else if (location.hash && currentPath() === tab.path) scrollToHash();
   else scrollTo(0, tab.scroll);
   invalidateBlocks();
+  readingCursorState.clear();
   updateReadingIndicator();
 }
 
@@ -1889,7 +2006,7 @@ const toc = createSelector<Heading>({
       const source = editor.view.state.doc.toString();
       line = lineAtOffset(lineStarts(source), editor.view.state.selection.main.head);
     } else {
-      line = currentHeadingLine();
+      line = currentSourceLine() ?? currentHeadingLine();
     }
     let index = 0;
     items.forEach((item, position) => {
@@ -1910,6 +2027,12 @@ const toc = createSelector<Heading>({
   preview(item) {
     if (!active) return "";
     const heading = item.data;
+    const blocks = navigationBlocks();
+    let blockIndex = -1;
+    blocks.forEach((block, index) => {
+      if (block.line <= heading.line && heading.line <= block.endLine) blockIndex = index;
+    });
+    if (blockIndex >= 0) readingCursorState.set(blockIndex, blocks.length);
     const source = editor ? editor.view.state.doc.toString() : active.draft;
     const lines = source.split("\n");
     const section = lines.slice(heading.line - 1, heading.sectionEnd - 1);
@@ -2057,6 +2180,32 @@ content.addEventListener("dblclick", (event) => {
   });
 });
 
+// Clic simple: sitúa el marcador de lectura en esa línea y desplaza la vista si
+// es necesario. Se excluyen enlaces, selecciones activas y el primer clic de un
+// doble clic (para no mover el marcador antes de abrir el editor).
+content.addEventListener("click", (event) => {
+  if (editor || !active || !editable || event.button !== 0) return;
+  if (promptMode || hints) return;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+  const target = event.target instanceof Element ? event.target : null;
+  // Los enlaces navegan con el primer clic; no reasignamos el marcador.
+  if (target?.closest("a[href]")) return;
+  // Una selección en curso anula el click: el usuario está arrastrando texto.
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed) return;
+
+  const line = lineAtPoint(target, event.clientY);
+  if (line === undefined) return;
+
+  event.preventDefault();
+  const index = sourceBlockIndex(line);
+  if (index < 0) return;
+  readingCursorState.set(index, navigationBlocks().length);
+  scrollToSourceLine(line);
+  scheduleReadingIndicator();
+});
+
 window.addEventListener("popstate", () => {
   restoreFromUrl();
 });
@@ -2188,7 +2337,22 @@ const relayout = () => {
 window.addEventListener(
   "scroll",
   () => {
-    closeHints();
+    const blocks = navigationBlocks();
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    if (programmaticScrollTarget !== undefined && Math.abs(scrollY - programmaticScrollTarget) <= 2) {
+      programmaticScrollTarget = undefined;
+      scheduleReadingIndicator();
+      return;
+    }
+    programmaticScrollTarget = undefined;
+    const readingY = readingReferenceY(
+      referenceY() + scrollY,
+      statusBar.getBoundingClientRect().top + scrollY,
+      scrollY,
+      maxScroll,
+    );
+    const next = readingBlockIndex(blocks, readingY, scrollY, maxScroll);
+    readingCursorState.set(next, blocks.length);
     scheduleReadingIndicator();
   },
   { passive: true },
