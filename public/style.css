@@ -455,6 +455,15 @@ button#mode:disabled {
   white-space: nowrap;
 }
 
+#status-vim {
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+#status-vim:empty {
+  display: none;
+}
+
 #status-state {
   color: var(--muted);
   white-space: nowrap;
@@ -513,6 +522,39 @@ button#mode:disabled {
 
 #status-actions button:hover {
   border-color: var(--fg);
+}
+
+/* La línea `:` y las búsquedas `/` `?` usan el mismo lenguaje que la barra. */
+.cm-vim-panel {
+  padding: 0.2rem 1rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  min-height: 0;
+}
+
+.cm-vim-panel > div {
+  display: flex;
+  flex: 1;
+}
+
+.cm-vim-panel input {
+  flex: 1;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  outline: none;
+  font: inherit;
+}
+
+.cm-vim-panel .cm-vim-message {
+  color: var(--warn);
+}
+
+/* La grabación de macros se muestra en la barra inferior. */
+.cm-vim-panel:has(span.cm-vim-message) {
+  display: none;
 }
 
 body.finder-open {

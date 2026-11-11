@@ -1,8 +1,9 @@
-import { createEditor, type EditorSession } from "./editor.ts";
+import { createEditor, type EditorExitOptions, type EditorSession } from "./editor.ts";
 import { createFinder } from "./finder.ts";
 import { createLeader } from "./keys.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
 import { parseStoredTabs, serializeTabs, type TabMode } from "./tabstore.ts";
+import { vimModeLabel, vimStatusText } from "./vimui.ts";
 
 const content = document.querySelector<HTMLElement>("#content")!;
 const crumb = document.querySelector<HTMLElement>("#path")!;
@@ -11,6 +12,7 @@ const tabBar = document.querySelector<HTMLElement>("#tabs")!;
 const bar = document.querySelector<HTMLElement>("#bar")!;
 const statusBar = document.querySelector<HTMLElement>("#status")!;
 const statusMode = document.querySelector<HTMLElement>("#status-mode")!;
+const statusVim = document.querySelector<HTMLElement>("#status-vim")!;
 const statusState = document.querySelector<HTMLElement>("#status-state")!;
 const statusMessage = document.querySelector<HTMLElement>("#status-message")!;
 const statusActions = document.querySelector<HTMLElement>("#status-actions")!;
@@ -59,6 +61,7 @@ let active: Tab | null = null;
 let request = 0;
 let editor: EditorSession | undefined;
 let editable = false;
+let vimStatusTimer: ReturnType<typeof setInterval> | undefined;
 
 function pathFromUrl(url: URL) {
   if (!url.pathname.startsWith(VIEW_PREFIX)) return null;
@@ -226,9 +229,21 @@ function renderStatusActions(actions: StatusAction[]) {
   );
 }
 
+function paintVimStatus() {
+  if (!editor) {
+    statusVim.textContent = "";
+    return;
+  }
+
+  const status = editor.vimStatus();
+  statusMode.textContent = vimModeLabel(status.mode);
+  statusVim.textContent = vimStatusText(status);
+}
+
 function renderStatus() {
   const tab = active;
-  statusMode.textContent = tab ? (editor ? "Edición" : "Vista") : "Índice";
+  statusMode.textContent = tab ? (editor ? vimModeLabel(editor.vimStatus().mode) : "Vista") : "Índice";
+  statusVim.textContent = editor ? vimStatusText(editor.vimStatus()) : "";
 
   let state = "Listo";
   let tone: StatusTone = "ok";
@@ -328,11 +343,14 @@ function syncTabState() {
 function updateChrome() {
   const tab = active;
   const editing = !!editor;
-  modeButton.textContent = editing ? "Vista" : "Editar";
+  modeButton.textContent = editing ? "Vim" : "Editar";
   modeButton.setAttribute("aria-pressed", String(editing));
-  modeButton.setAttribute("aria-label", editing ? "Volver a vista (Esc)" : "Editar (e)");
-  modeButton.title = editing ? "Volver a vista (Esc)" : "Editar (e)";
-  modeButton.disabled = !tab || !editable;
+  modeButton.setAttribute(
+    "aria-label",
+    editing ? "Editor Vim: :wq guarda y sale" : "Editar (a)",
+  );
+  modeButton.title = editing ? "Editor Vim: :wq guarda y sale" : "Editar (a)";
+  modeButton.disabled = editing || !tab || !editable;
 
   document.title = tab ? `${tab.dirty ? "● " : ""}${tab.path} · markvi` : "markvi";
   renderStatus();
@@ -345,6 +363,11 @@ function setTheme() {
 themePreference.addEventListener("change", setTheme);
 
 function leaveEditor() {
+  if (vimStatusTimer !== undefined) {
+    clearInterval(vimStatusTimer);
+    vimStatusTimer = undefined;
+  }
+  statusVim.textContent = "";
   if (!editor || !active) return;
   active.cursor = editor.view.state.selection.main.head;
   active.draft = editor.view.state.doc.toString();
@@ -373,14 +396,17 @@ function enterEditor(tab: Tab) {
       updateChrome();
       syncTabState();
     },
-    onSave: () => void saveDraft(tab),
-    onExit: () => void exitEditor(tab),
+    onSave: () => saveDraft(tab),
+    onExit: (options) => exitEditor(tab, options),
+    onMessage: (message) => notify(message, "warn", 0),
+    hasChanges: () => tab.dirty,
   });
 
   setTheme();
   updateChrome();
   syncTabState();
   persistTabs();
+  vimStatusTimer = setInterval(paintVimStatus, 100);
 }
 
 async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
@@ -577,14 +603,29 @@ function discardChanges(tab: Tab) {
   notify("Cambios descartados", "ok", 2500);
 }
 
-async function exitEditor(tab: Tab) {
+async function exitEditor(tab: Tab, options: EditorExitOptions = {}) {
   if (tab !== active || !editor) return;
 
-  const saved = await saveDraft(tab);
-  if (!saved || tab !== active || !editor) return;
+  if (options.save) {
+    const saved = await saveDraft(tab);
+    if (!saved || tab !== active || !editor) return;
+  }
 
   tab.mode = "view";
   leaveEditor();
+
+  if (options.discard) {
+    const hadChanges = tab.dirty;
+    tab.draft = tab.raw;
+    tab.dirty = false;
+    if (hadChanges) notify("Cambios descartados", "ok", 2500);
+    if (tab.conflict) {
+      persistTabs();
+      await reloadTab(tab, { discard: true });
+      return;
+    }
+  }
+
   persistTabs();
   await showTab(tab, tab.scroll);
 }
@@ -921,7 +962,9 @@ async function handleDiskChange(event: DiskEvent) {
       if (type === "change") {
         const current = await loadFile(tab.path).catch(() => null);
         if (current) {
-          if (current.text === tab.raw) continue;
+          // El evento puede venir de nuestro propio guardado en curso: si el
+          // disco ya tiene el borrador actual, no hay conflicto.
+          if (current.text === tab.raw || current.text === tab.draft) continue;
         } else {
           type = "delete";
         }
@@ -995,9 +1038,7 @@ const leader = createLeader([
 ]);
 
 modeButton.addEventListener("click", () => {
-  if (!active) return;
-  if (editor) void exitEditor(active);
-  else enterEditor(active);
+  if (active && !editor) enterEditor(active);
 });
 
 document.addEventListener("click", (event) => {
@@ -1047,6 +1088,33 @@ function isTypingTarget(target: EventTarget | null) {
   return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
 }
 
+// La líder también funciona en modo Normal del editor. Se intercepta en
+// captura para que Vim no reciba el espacio ni las teclas de la secuencia.
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (!editor || event.isComposing) return;
+
+    const target = event.target;
+    if (!(target instanceof Node) || !editor.view.dom.contains(target)) return;
+    if (target instanceof Element && target.closest(".cm-vim-panel")) return;
+
+    if (leader.active) {
+      event.preventDefault();
+      event.stopPropagation();
+      leader.feed(event.key);
+      return;
+    }
+
+    if (event.key === " " && editor.vimStatus().mode === "normal") {
+      event.preventDefault();
+      event.stopPropagation();
+      leader.start();
+    }
+  },
+  true,
+);
+
 document.addEventListener("keydown", (event) => {
   if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
   if (finder.isOpen) return;
@@ -1067,7 +1135,8 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (event.key.toLowerCase() === "e" && !editor && editable && active) {
+  const key = event.key.toLowerCase();
+  if ((key === "a" || key === "i") && !editor && editable && active) {
     event.preventDefault();
     enterEditor(active);
   }
