@@ -277,25 +277,33 @@ a:hover {
   margin-top: 0;
 }
 
-/* Bloque bajo la línea de lectura: barra fina en el margen, sin tocar el
-   Markdown. En pantallas estrechas se sustituye por un fondo tenue. */
-[data-line].reading {
-  position: relative;
+/* Un único marcador flotante en el margen del contenido, independiente de la
+   sangría del bloque (listas, citas y casillas). En móvil queda el fondo tenue. */
+.reading-marker {
+  position: fixed;
+  top: 0;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  font-size: 1rem;
+  line-height: 18px;
+  pointer-events: none;
+  transition:
+    transform 120ms ease-out,
+    left 120ms ease-out;
 }
 
-[data-line].reading::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  left: -0.75rem;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--accent);
-  opacity: 0.35;
+.reading-marker[hidden] {
+  display: none;
+}
+
+[data-line].reading {
+  background: transparent;
 }
 
 @media (max-width: 40rem) {
-  [data-line].reading::before {
+  .reading-marker {
     display: none;
   }
 
@@ -1173,6 +1181,10 @@ pre code {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .reading-marker {
+    transition: none;
+  }
+
   *,
   *::before,
   *::after {

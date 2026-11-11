@@ -2,7 +2,7 @@ import { createEditor, type EditorExitOptions, type EditorSession } from "./edit
 import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
 import { hintLabels } from "./hints.ts";
-import { createLeader } from "./keys.ts";
+import { createLeader, isModifierKey } from "./keys.ts";
 import {
   interpolateLine,
   lineAtOffset,
@@ -107,6 +107,11 @@ interface HintState {
 
 let blockCache: BlockEntry[] | undefined;
 let readingElement: HTMLElement | undefined;
+const readingMarker = document.createElement("span");
+readingMarker.className = "reading-marker";
+readingMarker.textContent = "▸";
+readingMarker.setAttribute("aria-hidden", "true");
+document.body.append(readingMarker);
 let readingFrame = 0;
 
 const viewNav = createViewNav();
@@ -145,6 +150,7 @@ function blockMap() {
 
 function invalidateBlocks() {
   blockCache = undefined;
+  if (!readingElement?.isConnected) readingElement = undefined;
 }
 
 function currentBlock() {
@@ -186,10 +192,31 @@ function lineAtPoint(target: Element | null, clientY: number) {
 
 function updateReadingIndicator() {
   const block = !editor && active && editable ? currentBlock() : undefined;
-  if (readingElement === block?.element) return;
-  readingElement?.classList.remove("reading");
-  readingElement = block?.element;
-  readingElement?.classList.add("reading");
+  if (readingElement !== block?.element) {
+    readingElement?.classList.remove("reading");
+    readingElement = block?.element;
+    readingElement?.classList.add("reading");
+  }
+
+  if (!block) {
+    readingMarker.hidden = true;
+    return;
+  }
+
+  const contentRect = content.getBoundingClientRect();
+  const blockRect = block.element.getBoundingClientRect();
+  const styles = getComputedStyle(block.element);
+  const lineHeight = Number.parseFloat(styles.lineHeight);
+  const fontSize = Number.parseFloat(styles.fontSize);
+  const firstLineHeight = Number.isFinite(lineHeight)
+    ? lineHeight
+    : Number.isFinite(fontSize)
+      ? fontSize * 1.65
+      : 24;
+
+  readingMarker.hidden = false;
+  readingMarker.style.left = `${contentRect.left + 1}px`;
+  readingMarker.style.transform = `translateY(${blockRect.top + Math.max(0, (firstLineHeight - 18) / 2)}px)`;
 }
 
 function scheduleReadingIndicator() {
@@ -1073,7 +1100,9 @@ async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
 
   const text = editor ? editor.view.state.doc.toString() : tab.draft;
   tab.draft = text;
-  if (editor) tab.cursor = editor.view.state.selection.main.head;
+  const savedCursor = editor?.view.state.selection.main.head;
+  const savedEtag = tab.etag;
+  if (savedCursor !== undefined) tab.cursor = savedCursor;
 
   const headers: Record<string, string> = { "Content-Type": "text/plain; charset=utf-8" };
   if (tab.etag && !options.force) headers["If-Match"] = tab.etag;
@@ -1085,19 +1114,28 @@ async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
       body: text,
     });
 
+    if (tab.raw !== text || tab.etag !== savedEtag) return true;
+
+    const responseEtag = response.headers.get("etag") ?? savedEtag;
     tab.raw = text;
-    tab.dirty = false;
-    tab.etag = response.headers.get("etag") ?? undefined;
-    tab.conflict = undefined;
+    // Si se guardó un borrador ya marcado como dirty (p. ej. forzado), comparar
+    // el texto actual con el snapshot enviado y conservar cualquier edición nueva.
+    tab.dirty = tab.draft !== text;
+    tab.etag = responseEtag;
+    if (tab.draft === text) tab.conflict = undefined;
     tab.loaded = true;
     tab.error = undefined;
 
     updateChrome();
     syncTabState();
     persistTabs();
-    notify("Guardado en disco", "ok", 2500);
+    if (tab === active) notify("Guardado en disco", "ok", 2500);
     return true;
   } catch (error) {
+    if (tab.raw !== text || tab.etag !== savedEtag) {
+      // Otro guardado/edición ya avanzó este buffer mientras fallaba la petición.
+      return false;
+    }
     handleSaveError(tab, error);
     return false;
   }
@@ -1176,22 +1214,51 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
   // invalida la petición anterior para que no pinte contenido viejo al llegar.
   const id = tab === active ? ++request : undefined;
 
-  if (tab === active) {
-    loading = true;
-    updateChrome();
-  }
-
   try {
     const file = await loadFile(tab.path);
     if (id !== undefined && id !== request) return false;
 
+    // El usuario pudo reanudar la edición mientras la petición estaba en vuelo.
+    // No pisar el nuevo borrador; si el disco sigue en el último guardado solo
+    // refrescamos su ETag, y si diverge de ambos contenidos marcamos conflicto.
+    if (tab.dirty && !options.discard) {
+      if (file.text === tab.raw) {
+        tab.etag = file.etag;
+      } else if (file.text === tab.draft) {
+        // El disco ya contiene exactamente el borrador más reciente. Sincronizar
+        // estado sin volver a despachar el documento al editor.
+        tab.raw = file.text;
+        tab.etag = file.etag;
+        tab.dirty = false;
+        tab.conflict = undefined;
+        tab.loaded = true;
+        tab.error = undefined;
+        persistTabs();
+        if (tab === active) updateChrome();
+        syncTabState();
+        return true;
+      } else {
+        tab.conflict = "changed";
+        if (tab === active) {
+          notify("El archivo cambió en disco. Tienes cambios sin guardar.", "warn", 0);
+          updateChrome();
+        }
+        syncTabState();
+      }
+      return false;
+    }
+
+    // fs.watch también notifica nuestras propias escrituras. Evitar incluso el
+    // repintado de la vista/editor cuando el contenido no cambió.
+    if (file.text === tab.raw && !options.discard) {
+      tab.etag = file.etag;
+      if (tab === active) updateChrome();
+      return true;
+    }
+
     tab.raw = file.text;
     tab.draft = file.text;
-    tab.etag = file.etag;
     tab.dirty = false;
-    tab.loaded = true;
-    tab.error = undefined;
-    tab.conflict = undefined;
 
     if (tab === active) {
       if (editor) {
@@ -1931,8 +1998,12 @@ const leader = createLeader(
       },
     },
   ],
-  { onCancel: hideWhichKey },
+  { timeout: 0, onCancel: hideWhichKey },
 );
+
+document.addEventListener("click", () => {
+  if (leader.active) leader.cancel();
+});
 
 document.addEventListener("click", (event) => {
   if (event.defaultPrevented || event.button !== 0) return;
@@ -2027,6 +2098,7 @@ document.addEventListener(
     if (target instanceof Element && target.closest(".cm-vim-panel")) return;
 
     if (leader.active) {
+      if (isModifierKey(event.key)) return;
       event.preventDefault();
       event.stopPropagation();
       hideWhichKey();
@@ -2054,6 +2126,7 @@ document.addEventListener("keydown", (event) => {
   if (inEditor || isTypingTarget(target)) return;
 
   if (leader.active) {
+    if (isModifierKey(event.key)) return;
     event.preventDefault();
     hideWhichKey();
     const result = leader.feed(event.key);

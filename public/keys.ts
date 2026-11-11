@@ -19,6 +19,24 @@ export interface LeaderOptions {
 
 export type LeaderFeedResult = "pending" | "handled" | "miss" | "ignored";
 
+/** Teclas modificadoras solas no deben cancelar una secuencia líder. */
+export function isModifierKey(key: string) {
+  return [
+    "Shift",
+    "Control",
+    "Alt",
+    "AltGraph",
+    "Meta",
+    "OS",
+    "Super",
+    "Hyper",
+    "Fn",
+    "CapsLock",
+    "NumLock",
+    "ScrollLock",
+  ].includes(key);
+}
+
 export interface Leader {
   readonly active: boolean;
   /** Secuencia pendiente, sin la tecla líder. */

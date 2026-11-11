@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createLeader } from "./keys.ts";
+import { createLeader, isModifierKey } from "./keys.ts";
 
 describe("createLeader", () => {
   test("ignora teclas si no se ha pulsado la líder", () => {
@@ -64,6 +64,31 @@ describe("createLeader", () => {
     expect(leader.active).toBe(true);
     await Bun.sleep(20);
     expect(leader.active).toBe(false);
+  });
+
+  test("timeout 0 mantiene activa la líder hasta cancelar o resolver", async () => {
+    const leader = createLeader([{ keys: ["f"], run: () => {} }], { timeout: 0 });
+    leader.start();
+    await Bun.sleep(30);
+    expect(leader.active).toBe(true);
+    expect(leader.feed("f")).toBe("handled");
+    expect(leader.active).toBe(false);
+  });
+
+  test("identifica modificadores para ignorarlos durante la líder", () => {
+    for (const key of ["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock"]) {
+      expect(isModifierKey(key)).toBe(true);
+    }
+    for (const key of [" ", "Escape", "f", "ArrowDown"]) {
+      expect(isModifierKey(key)).toBe(false);
+    }
+
+    const leader = createLeader([{ keys: ["f"], run: () => {} }], { timeout: 0 });
+    leader.start();
+    for (const key of ["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock"]) {
+      if (isModifierKey(key)) expect(leader.active).toBe(true);
+    }
+    expect(leader.feed("f")).toBe("handled");
   });
 
   test("expone la secuencia pendiente y las continuaciones", () => {

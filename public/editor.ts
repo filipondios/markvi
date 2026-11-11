@@ -6,6 +6,7 @@ import { drawSelection, EditorView, GutterMarker, gutter, keymap } from "@codemi
 import { oneDark } from "@codemirror/theme-one-dark";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import type { VimStatus } from "./vimui.ts";
+import { minimalTextChange } from "./textchange.ts";
 
 export interface EditorSession {
   view: EditorView;
@@ -287,11 +288,21 @@ export function createEditor(
       view.dispatch({ effects: theme.reconfigure([editorTheme, ...(dark ? [oneDark] : [])]) });
     },
     setDoc: (doc, cursor = view.state.selection.main.head) => {
+      const current = view.state.doc.toString();
+      if (current === doc) return;
+
       const position = Math.max(0, Math.min(cursor, doc.length));
+      const scrollDOM = view.scrollDOM;
+      const scrollTop = scrollDOM.scrollTop;
+      const scrollLeft = scrollDOM.scrollLeft;
+      const change = minimalTextChange(current, doc);
       view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: doc },
+        changes: change,
         selection: { anchor: position },
+        scrollIntoView: false,
       });
+      scrollDOM.scrollTop = scrollTop;
+      scrollDOM.scrollLeft = scrollLeft;
     },
     vimStatus: () => {
       const state = getCM(view)?.state.vim;
