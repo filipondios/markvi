@@ -29,10 +29,18 @@ En la vista renderizada:
 | `:` | Comando (`:e`, `:q`, `:w`) |
 | `a` / `i` | Entrar al editor en modo Normal |
 | `espacio` + `f` | Buscar archivos |
+| `espacio` + `t` | Índice del documento (TOC) |
 | `espacio` + `x` | Cerrar la pestaña activa |
 
 Los contadores funcionan como en Vim: `5j`, `3]]`, `2gt`, `10G`. La tecla
 pendiente se muestra en la barra inferior.
+
+## Índice del documento
+
+`espacio` + `t` abre el índice de encabezados del documento con búsqueda difusa
+y preview de la sección. `Enter` desplaza la vista hasta el encabezado; en el
+editor, mueve el cursor a su línea. Funciona desde la vista y desde modo Normal
+del editor.
 
 ## Editor Vim
 
