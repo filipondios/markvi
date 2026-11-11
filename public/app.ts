@@ -1,5 +1,7 @@
 import { createEditor, type EditorExitOptions, type EditorSession } from "./editor.ts";
 import { createFinder } from "./finder.ts";
+import { fuzzySearch } from "./fuzzy.ts";
+import { hintLabels } from "./hints.ts";
 import { createLeader } from "./keys.ts";
 import {
   interpolateLine,
@@ -11,7 +13,9 @@ import {
   type BlockBox,
 } from "./lines.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
+import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
 import { parseStoredTabs, serializeTabs, type TabMode } from "./tabstore.ts";
+import { createViewNav, type ViewCommand } from "./viewnav.ts";
 import { vimModeLabel, vimStatusText } from "./vimui.ts";
 
 const content = document.querySelector<HTMLElement>("#content")!;
@@ -25,6 +29,9 @@ const statusVim = document.querySelector<HTMLElement>("#status-vim")!;
 const statusState = document.querySelector<HTMLElement>("#status-state")!;
 const statusMessage = document.querySelector<HTMLElement>("#status-message")!;
 const statusActions = document.querySelector<HTMLElement>("#status-actions")!;
+const promptBar = document.querySelector<HTMLElement>("#prompt")!;
+const promptPrefix = document.querySelector<HTMLElement>("#prompt-prefix")!;
+const promptInput = document.querySelector<HTMLInputElement>("#prompt-input")!;
 const themePreference = matchMedia("(prefers-color-scheme: dark)");
 
 type Mode = TabMode;
@@ -76,9 +83,33 @@ interface BlockEntry extends BlockBox {
   element: HTMLElement;
 }
 
+interface SearchState {
+  query: string;
+  matches: Range[];
+  index: number;
+}
+
+interface HintEntry {
+  label: string;
+  link: HTMLAnchorElement;
+  span: HTMLElement;
+}
+
+interface HintState {
+  entries: HintEntry[];
+  typed: string;
+  overlay: HTMLElement;
+}
+
 let blockCache: BlockEntry[] | undefined;
 let readingElement: HTMLElement | undefined;
 let readingFrame = 0;
+
+const viewNav = createViewNav();
+let searchState: SearchState | undefined;
+let hints: HintState | undefined;
+let promptMode: "search" | "ex" | undefined;
+let promptDirection: 1 | -1 = 1;
 
 /** Posición vertical de referencia: 30 % del área visible del contenido. */
 function referenceY() {
@@ -222,6 +253,419 @@ function readingCursor(tab: Tab) {
     }
   }
   return cursorForLine(tab.draft, currentSourceLine() ?? 1);
+}
+
+/** Bloques navegables: se colapsan los que comparten altura (lista y su primer
+ * elemento) para que `j`/`k` avancen de verdad. */
+function navigationBlocks() {
+  const blocks: BlockEntry[] = [];
+  for (const block of blockMap()) {
+    const last = blocks[blocks.length - 1];
+    if (last && Math.abs(last.top - block.top) < 1) blocks[blocks.length - 1] = block;
+    else blocks.push(block);
+  }
+  return blocks;
+}
+
+function scrollToBlock(block: BlockEntry) {
+  scrollTo(0, Math.max(0, block.top - referenceY()));
+}
+
+function moveBlock(delta: number) {
+  const blocks = navigationBlocks();
+  if (blocks.length === 0) return;
+  const current = pickBlockIndex(blocks, referenceY() + scrollY);
+  const next = Math.min(blocks.length - 1, Math.max(0, current + delta));
+  scrollToBlock(blocks[next]!);
+}
+
+function goTop(count?: number) {
+  if (count === undefined) {
+    scrollTo(0, 0);
+    return;
+  }
+  const blocks = navigationBlocks();
+  const block = blocks[Math.min(blocks.length, Math.max(1, count)) - 1];
+  if (block) scrollToBlock(block);
+}
+
+function goBottom(count?: number) {
+  if (count === undefined) {
+    scrollTo(0, document.documentElement.scrollHeight);
+    return;
+  }
+  const blocks = navigationBlocks();
+  const block = blocks[Math.min(blocks.length, Math.max(1, count)) - 1];
+  if (block) scrollToBlock(block);
+}
+
+function halfPage(direction: 1 | -1) {
+  const top = bar.getBoundingClientRect().bottom;
+  const bottom = statusBar.getBoundingClientRect().top;
+  scrollBy(0, direction * ((bottom - top) / 2));
+}
+
+function moveHeading(direction: 1 | -1, count: number) {
+  const headings = Array.from(content.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"));
+  if (headings.length === 0) {
+    notify("El documento no tiene encabezados", "warn", 2000);
+    return;
+  }
+
+  const y = referenceY() + scrollY;
+  let index = -1;
+  headings.forEach((heading, position) => {
+    if (heading.getBoundingClientRect().top + scrollY <= y) index = position;
+  });
+
+  const next = Math.min(headings.length - 1, Math.max(0, index + direction * count));
+  const heading = headings[next]!;
+  scrollTo(0, Math.max(0, heading.getBoundingClientRect().top + scrollY - referenceY()));
+}
+
+function switchTabBy(direction: 1 | -1, count?: number) {
+  if (tabs.length === 0) return;
+
+  if (count === undefined) {
+    switchTab(direction);
+    return;
+  }
+
+  if (direction > 0) {
+    const tab = tabs[Math.min(tabs.length, Math.max(1, count)) - 1];
+    if (tab) switchTo(tab);
+    return;
+  }
+
+  const index = active ? tabs.indexOf(active) : 0;
+  const target = ((index - count) % tabs.length + tabs.length) % tabs.length;
+  const tab = tabs[target];
+  if (tab) switchTo(tab);
+}
+
+function goHistory(direction: 1 | -1) {
+  if (direction < 0) history.back();
+  else history.forward();
+}
+
+const supportsHighlights =
+  typeof CSS !== "undefined" && "highlights" in CSS && typeof Highlight !== "undefined";
+
+function clearSearch() {
+  searchState = undefined;
+  if (!supportsHighlights) return;
+  CSS.highlights.delete("markvi-search");
+  CSS.highlights.delete("markvi-search-current");
+}
+
+function paintSearch() {
+  if (!supportsHighlights) return;
+  if (!searchState) {
+    CSS.highlights.delete("markvi-search");
+    CSS.highlights.delete("markvi-search-current");
+    return;
+  }
+  CSS.highlights.set("markvi-search", new Highlight(...searchState.matches));
+  CSS.highlights.set(
+    "markvi-search-current",
+    new Highlight(searchState.matches[searchState.index]!),
+  );
+}
+
+function scrollToMatch(range: Range) {
+  const rect = range.getBoundingClientRect();
+  scrollTo(0, Math.max(0, rect.top + scrollY - referenceY()));
+}
+
+function searchDocument(query: string, direction: 1 | -1) {
+  clearSearch();
+
+  const { text, spans } = buildTextMap(content);
+  const caseSensitive = isCaseSensitive(query);
+  const matches: Range[] = [];
+
+  for (const offset of matchOffsets(text, query, caseSensitive)) {
+    const range = rangeFor(spans, offset.start, offset.end);
+    if (range) matches.push(range);
+  }
+
+  if (matches.length === 0) {
+    notify(`Sin coincidencias: ${query}`, "warn", 2500);
+    return;
+  }
+
+  const y = referenceY() + scrollY;
+  let index: number;
+  if (direction > 0) {
+    index = matches.findIndex((range) => range.getBoundingClientRect().top + scrollY >= y);
+    if (index < 0) index = 0;
+  } else {
+    index = -1;
+    for (let position = matches.length - 1; position >= 0; position--) {
+      if (matches[position]!.getBoundingClientRect().top + scrollY < y) {
+        index = position;
+        break;
+      }
+    }
+    if (index < 0) index = matches.length - 1;
+  }
+
+  searchState = { query, matches, index };
+  paintSearch();
+  scrollToMatch(matches[index]!);
+  notify(
+    `${matches.length} coincidencia${matches.length === 1 ? "" : "s"}: ${query}`,
+    "ok",
+    2500,
+  );
+}
+
+function nextMatch(direction: 1 | -1, count: number) {
+  if (!searchState) {
+    notify("Sin búsqueda activa", "warn", 2000);
+    return;
+  }
+  const total = searchState.matches.length;
+  searchState.index = ((searchState.index + direction * count) % total + total) % total;
+  paintSearch();
+  scrollToMatch(searchState.matches[searchState.index]!);
+}
+
+function openHints() {
+  if (hints) return;
+
+  const barBottom = bar.getBoundingClientRect().bottom;
+  const statusTop = statusBar.getBoundingClientRect().top;
+  const links = Array.from(content.querySelectorAll<HTMLAnchorElement>("a[href]")).filter(
+    (link) => {
+      const rect = link.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom > barBottom && rect.top < statusTop;
+    },
+  );
+
+  if (links.length === 0) {
+    notify("No hay enlaces visibles", "warn", 2000);
+    return;
+  }
+
+  const labels = hintLabels(links.length);
+  const overlay = element("div", "", "hint-layer");
+  const entries = links.slice(0, labels.length).map((link, index) => {
+    const label = labels[index]!;
+    const rect = link.getBoundingClientRect();
+    const span = element("span", label, "hint");
+    span.style.left = `${rect.left}px`;
+    span.style.top = `${rect.top}px`;
+    overlay.append(span);
+    return { label, link, span };
+  });
+
+  document.body.append(overlay);
+  hints = { entries, typed: "", overlay };
+  paintHints();
+}
+
+function paintHints() {
+  if (!hints) return;
+  for (const entry of hints.entries) {
+    const visible = entry.label.startsWith(hints.typed);
+    entry.span.hidden = !visible;
+    entry.span.textContent = entry.label.slice(hints.typed.length);
+  }
+}
+
+function closeHints() {
+  if (!hints) return;
+  hints.overlay.remove();
+  hints = undefined;
+}
+
+function handleHintKey(event: KeyboardEvent) {
+  if (!hints || event.isComposing) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.key === "Escape") {
+    closeHints();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey || event.altKey) && !event.getModifierState?.("AltGraph")) {
+    return;
+  }
+  if (event.key.length !== 1) return;
+
+  hints.typed += event.key.toLowerCase();
+  const matches = hints.entries.filter((entry) => entry.label.startsWith(hints!.typed));
+  if (matches.length === 0) {
+    closeHints();
+    return;
+  }
+  if (matches.length === 1 && matches[0]!.label === hints.typed) {
+    const link = matches[0]!.link;
+    closeHints();
+    link.click();
+    return;
+  }
+  paintHints();
+}
+
+function openPrompt(mode: "search" | "ex", direction: 1 | -1 = 1) {
+  promptMode = mode;
+  promptDirection = direction;
+  promptPrefix.textContent = mode === "search" ? (direction > 0 ? "/" : "?") : ":";
+  promptInput.value = "";
+  promptInput.placeholder =
+    mode === "search" ? "Buscar en el documento…" : ":e archivo · :q · :w";
+  promptBar.hidden = false;
+  promptInput.focus();
+}
+
+function closePrompt() {
+  promptMode = undefined;
+  promptBar.hidden = true;
+  promptInput.blur();
+}
+
+function submitPrompt() {
+  const value = promptInput.value;
+  const mode = promptMode;
+  const direction = promptDirection;
+  closePrompt();
+
+  if (mode === "search") {
+    if (value.trim()) searchDocument(value, direction);
+    else clearSearch();
+  } else if (mode === "ex") {
+    void runEx(value);
+  }
+}
+
+function normalizePath(input: string) {
+  let path = input.trim().replace(/^\.\//, "");
+  if (!path) return "";
+  if (!path.toLowerCase().endsWith(".md")) path += ".md";
+  return path;
+}
+
+async function openPath(input: string) {
+  const path = normalizePath(input);
+  if (!path) {
+    notify("Falta el nombre del archivo", "warn", 2500);
+    return;
+  }
+
+  const existing = findTab(path);
+  if (existing) {
+    switchTo(existing);
+    return;
+  }
+
+  let files: string[];
+  try {
+    files = ((await (await api("/api/tree")).json()) as { files: string[] }).files;
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error), "error", 3000);
+    return;
+  }
+
+  if (files.includes(path)) {
+    openInCurrentTab(path);
+    return;
+  }
+
+  const [best] = fuzzySearch(path, files);
+  if (best) {
+    openInCurrentTab(best.path);
+    return;
+  }
+
+  notify(`No se encontró ${path}`, "error", 3000);
+}
+
+async function runEx(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return;
+
+  const force = trimmed.endsWith("!");
+  const body = force ? trimmed.slice(0, -1).trim() : trimmed;
+  const [name, ...args] = body.split(/\s+/);
+  const command = (name ?? "").toLowerCase();
+  const argument = args.join(" ");
+
+  switch (command) {
+    case "e":
+    case "edit":
+      await openPath(argument);
+      return;
+    case "q":
+    case "quit":
+      if (!active) return;
+      closeTab(active, { force });
+      return;
+    case "w":
+    case "write":
+      if (!active) return;
+      if (!active.dirty) {
+        notify("Sin cambios que guardar", "ok", 2000);
+        return;
+      }
+      await saveDraft(active);
+      return;
+    case "wq":
+    case "x":
+      if (!active) return;
+      if (active.dirty && !(await saveDraft(active))) return;
+      closeTab(active, { force: true });
+      return;
+    default:
+      notify(`Comando desconocido: ${command}`, "error", 3000);
+  }
+}
+
+function runViewCommand(command: ViewCommand) {
+  switch (command.type) {
+    case "moveBlock":
+      moveBlock(command.count);
+      return;
+    case "halfPage":
+      halfPage(command.direction);
+      return;
+    case "top":
+      goTop(command.count);
+      return;
+    case "bottom":
+      goBottom(command.count);
+      return;
+    case "heading":
+      moveHeading(command.direction, command.count);
+      return;
+    case "search":
+      openPrompt("search", command.direction);
+      return;
+    case "nextMatch":
+      nextMatch(command.direction, command.count);
+      return;
+    case "hints":
+      openHints();
+      return;
+    case "tab":
+      switchTabBy(command.direction, command.count);
+      return;
+    case "history":
+      goHistory(command.direction);
+      return;
+    case "ex":
+      openPrompt("ex");
+      return;
+    case "cancel":
+      clearSearch();
+      return;
+  }
+}
+
+function paintViewPending() {
+  if (editor) return;
+  statusVim.textContent = viewNav.pending;
 }
 
 function pathFromUrl(url: URL) {
@@ -404,7 +848,7 @@ function paintVimStatus() {
 function renderStatus() {
   const tab = active;
   statusMode.textContent = tab ? (editor ? vimModeLabel(editor.vimStatus().mode) : "Vista") : "Índice";
-  statusVim.textContent = editor ? vimStatusText(editor.vimStatus()) : "";
+  statusVim.textContent = editor ? vimStatusText(editor.vimStatus()) : viewNav.pending;
 
   let state = "Listo";
   let tone: StatusTone = "ok";
@@ -553,6 +997,9 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
   tab.cursor = cursor;
 
   const host = element("div", "", "editor-host");
+  clearSearch();
+  closeHints();
+  viewNav.reset();
   content.replaceChildren(host);
   content.classList.add("editing");
   invalidateBlocks();
@@ -569,6 +1016,8 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
     onExit: (options) => exitEditor(tab, options),
     onMessage: (message) => notify(message, "warn", 0),
     hasChanges: () => tab.dirty,
+    onNextTab: () => queueMicrotask(() => switchTab(1)),
+    onPreviousTab: () => queueMicrotask(() => switchTab(-1)),
   });
 
   updateReadingIndicator();
@@ -580,11 +1029,11 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
 }
 
 async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
-  if (tab !== active || !editor) return false;
+  if (tab !== active) return false;
 
-  const text = editor.view.state.doc.toString();
+  const text = editor ? editor.view.state.doc.toString() : tab.draft;
   tab.draft = text;
-  tab.cursor = editor.view.state.selection.main.head;
+  if (editor) tab.cursor = editor.view.state.selection.main.head;
 
   const headers: Record<string, string> = { "Content-Type": "text/plain; charset=utf-8" };
   if (tab.etag && !options.force) headers["If-Match"] = tab.etag;
@@ -638,6 +1087,7 @@ async function recreateTab(tab: Tab) {
         editor.setDoc(text);
       } else {
         editable = true;
+        clearSearch();
         content.replaceChildren(renderMarkdown(tab.draft, tab.path));
         invalidateBlocks();
         updateReadingIndicator();
@@ -704,6 +1154,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
       } else {
         editable = true;
         const scroll = scrollY;
+        clearSearch();
         content.replaceChildren(renderMarkdown(tab.draft, tab.path));
         scrollTo(0, scroll);
         invalidateBlocks();
@@ -733,6 +1184,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
         tab.loaded = false;
         tab.error = "Archivo no encontrado.";
         if (tab === active && !editor) {
+          clearSearch();
           content.replaceChildren(element("p", tab.error, "error"));
           editable = false;
         }
@@ -765,6 +1217,7 @@ function discardChanges(tab: Tab) {
 
   if (tab === active) {
     editable = !wasDeleted;
+    clearSearch();
     if (wasDeleted) content.replaceChildren(element("p", tab.error!, "error"));
     else content.replaceChildren(renderMarkdown(tab.draft, tab.path));
     invalidateBlocks();
@@ -878,6 +1331,9 @@ async function showIndex() {
   if (editor) leaveEditor();
   active = null;
   editable = false;
+  viewNav.reset();
+  closeHints();
+  closePrompt();
   content.classList.remove("editing");
   crumb.textContent = "";
   updateChrome();
@@ -894,6 +1350,7 @@ async function showIndex() {
 
   content.replaceChildren(nodes);
   scrollTo(0, 0);
+  clearSearch();
   invalidateBlocks();
   updateReadingIndicator();
 }
@@ -903,6 +1360,9 @@ async function showTab(tab: Tab, scroll?: number) {
   if (editor) leaveEditor();
   active = tab;
   editable = false;
+  viewNav.reset();
+  closeHints();
+  closePrompt();
   content.classList.remove("editing");
   crumb.textContent = tab.path;
   updateChrome();
@@ -930,6 +1390,7 @@ async function showTab(tab: Tab, scroll?: number) {
   if (id !== request) return;
 
   if (tab.error) {
+    clearSearch();
     content.replaceChildren(element("p", tab.error, "error"));
     editable = false;
     invalidateBlocks();
@@ -946,6 +1407,7 @@ async function showTab(tab: Tab, scroll?: number) {
   }
 
   content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+  clearSearch();
   updateChrome();
   renderTabs();
 
@@ -1019,7 +1481,7 @@ function switchTab(delta: number) {
   if (next) switchTo(next);
 }
 
-function closeTab(tab: Tab) {
+function closeTab(tab: Tab, options: { force?: boolean } = {}) {
   const index = tabs.indexOf(tab);
   if (index < 0) return;
 
@@ -1027,6 +1489,7 @@ function closeTab(tab: Tab) {
   if (wasActive) storeActiveState();
   if (
     tab.dirty &&
+    !options.force &&
     !confirm(`"${tab.path}" tiene cambios sin guardar. ¿Cerrar la pestaña y descartarlos?`)
   ) {
     if (wasActive) editor?.view.focus();
@@ -1213,8 +1676,6 @@ const finder = createFinder({
 
 const leader = createLeader([
   { keys: ["f"], run: () => finder.open() },
-  { keys: ["ArrowLeft"], run: () => switchTab(-1) },
-  { keys: ["ArrowRight"], run: () => switchTab(1) },
   {
     keys: ["x"],
     run: () => {
@@ -1262,6 +1723,7 @@ document.addEventListener("click", (event) => {
 // cursor a la misma altura bajo el puntero.
 content.addEventListener("dblclick", (event) => {
   if (editor || !active || !editable || event.button !== 0) return;
+  if (promptMode || hints) return;
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
   const target = event.target instanceof Element ? event.target : null;
@@ -1280,6 +1742,19 @@ content.addEventListener("dblclick", (event) => {
 
 window.addEventListener("popstate", () => {
   restoreFromUrl();
+});
+
+// Las pistas de enlaces capturan las teclas antes que el resto de la vista.
+document.addEventListener("keydown", handleHintKey, true);
+
+promptInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    submitPrompt();
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    closePrompt();
+  }
 });
 
 window.addEventListener("beforeunload", (event) => {
@@ -1322,8 +1797,8 @@ document.addEventListener(
 );
 
 document.addEventListener("keydown", (event) => {
-  if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (finder.isOpen) return;
+  if (event.isComposing) return;
+  if (finder.isOpen || promptMode || hints) return;
 
   const target = event.target;
   const inEditor = editor?.view.dom.contains(target as Node) ?? false;
@@ -1341,6 +1816,29 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (!editor && editable && active) {
+    const command = viewNav.handle({
+      key: event.key,
+      ctrl: event.ctrlKey,
+      meta: event.metaKey,
+      alt: event.altKey,
+      altGraph: event.getModifierState?.("AltGraph") ?? false,
+    });
+    paintViewPending();
+
+    if (command) {
+      event.preventDefault();
+      runViewCommand(command);
+      return;
+    }
+    if (viewNav.pending) {
+      event.preventDefault();
+      return;
+    }
+  }
+
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+
   const key = event.key.toLowerCase();
   if ((key === "a" || key === "i") && !editor && editable && active) {
     event.preventDefault();
@@ -1356,12 +1854,20 @@ syncLayoutMetrics();
 connectEvents();
 
 const relayout = () => {
+  closeHints();
   invalidateBlocks();
   syncLayoutMetrics();
   scheduleReadingIndicator();
 };
 
-window.addEventListener("scroll", scheduleReadingIndicator, { passive: true });
+window.addEventListener(
+  "scroll",
+  () => {
+    closeHints();
+    scheduleReadingIndicator();
+  },
+  { passive: true },
+);
 window.addEventListener("resize", relayout);
 
 if (typeof ResizeObserver !== "undefined") {

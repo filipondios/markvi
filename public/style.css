@@ -551,6 +551,77 @@ button#mode:disabled {
   border-color: var(--fg);
 }
 
+/* Línea de comando de la vista (`/`, `?`, `:`), encima de la barra inferior. */
+#prompt {
+  position: fixed;
+  inset: auto 0 var(--status-height, 1.9rem);
+  z-index: 4;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.35rem 1rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+#prompt[hidden] {
+  display: none;
+}
+
+#prompt-prefix {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+#prompt-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  outline: none;
+  font: inherit;
+}
+
+/* Pistas de enlaces (`f`): etiquetas flotantes sobre los enlaces visibles. */
+.hint-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+
+.hint {
+  position: absolute;
+  padding: 0 0.25rem;
+  background: var(--warn);
+  color: var(--bg);
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.hint[hidden] {
+  display: none;
+}
+
+/* Resaltado de búsqueda sin tocar el DOM (CSS Custom Highlight API). */
+::highlight(markvi-search) {
+  background-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  color: inherit;
+}
+
+::highlight(markvi-search-current) {
+  background-color: var(--warn);
+  color: var(--bg);
+}
+
 /* La línea `:` y las búsquedas `/` `?` usan el mismo lenguaje que la barra. */
 .cm-vim-panel {
   padding: 0.2rem 1rem;

@@ -32,6 +32,9 @@ export interface EditorOptions {
   cursor: number;
   /** Altura de pantalla donde debe quedar la línea del cursor al abrir. */
   screenY?: number;
+  /** Cambiar de pestaña desde modo Normal (`gt` / `gT`). */
+  onNextTab?: () => void;
+  onPreviousTab?: () => void;
 }
 
 interface SessionControls {
@@ -39,6 +42,8 @@ interface SessionControls {
   exit(options?: EditorExitOptions): void | Promise<void>;
   message(message: string): void;
   hasChanges(): boolean;
+  nextTab(): void;
+  previousTab(): void;
   setNumber(value: boolean): void;
   setRelative(value: boolean): void;
   setScrolloff(value: number): void;
@@ -114,6 +119,13 @@ for (const context of ["normal", "visual"]) {
 }
 Vim.map("ZZ", ":x<CR>", "normal");
 Vim.map("ZQ", ":q!<CR>", "normal");
+
+// `gt` / `gT` cambian de pestaña también desde modo Normal. Los comandos ex
+// son globales y llaman a la sesión activa.
+Vim.defineEx("tabnext", "tabn", () => active?.nextTab());
+Vim.defineEx("tabprevious", "tabp", () => active?.previousTab());
+Vim.map("gt", ":tabnext<CR>", "normal");
+Vim.map("gT", ":tabprevious<CR>", "normal");
 
 class NumberMarker extends GutterMarker {
   readonly text: string;
@@ -205,6 +217,8 @@ export function createEditor(
     exit: options.onExit,
     message: options.onMessage,
     hasChanges: options.hasChanges,
+    nextTab: options.onNextTab ?? (() => {}),
+    previousTab: options.onPreviousTab ?? (() => {}),
     setNumber(value) {
       number = value;
       applyGutter();
