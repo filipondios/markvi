@@ -132,21 +132,30 @@ export function fuzzyMatch(query: string, target: string): FuzzyMatch | null {
   };
 }
 
-/** Filtra y ordena `paths` por relevancia. Sin consulta conserva el orden recibido. */
-export function fuzzySearch(query: string, paths: readonly string[]): FuzzyResult[] {
+export interface FuzzyItemResult<T> extends FuzzyMatch {
+  item: T;
+}
+
+/** Igual que `fuzzySearch`, pero sobre elementos arbitrarios y su texto. */
+export function fuzzySearchItems<T>(
+  query: string,
+  items: readonly T[],
+  text: (item: T) => string,
+): FuzzyItemResult<T>[] {
   const terms = query.trim().split(/\s+/).filter(Boolean);
   if (terms.length === 0) {
-    return paths.map((path) => ({ path, score: 0, positions: [] }));
+    return items.map((item) => ({ item, score: 0, positions: [] }));
   }
 
-  const results: FuzzyResult[] = [];
-  for (const path of paths) {
+  const results: FuzzyItemResult<T>[] = [];
+  for (const item of items) {
+    const target = text(item);
     let score = 0;
     const positions = new Set<number>();
     let matches = true;
 
     for (const term of terms) {
-      const match = fuzzyMatch(term, path);
+      const match = fuzzyMatch(term, target);
       if (!match) {
         matches = false;
         break;
@@ -157,11 +166,22 @@ export function fuzzySearch(query: string, paths: readonly string[]): FuzzyResul
 
     if (!matches) continue;
     results.push({
-      path,
+      item,
       score,
       positions: [...positions].sort((a, b) => a - b),
     });
   }
 
-  return results.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  return results.sort(
+    (a, b) => b.score - a.score || text(a.item).localeCompare(text(b.item)),
+  );
+}
+
+/** Filtra y ordena `paths` por relevancia. Sin consulta conserva el orden recibido. */
+export function fuzzySearch(query: string, paths: readonly string[]): FuzzyResult[] {
+  return fuzzySearchItems(query, paths, (path) => path).map((result) => ({
+    path: result.item,
+    score: result.score,
+    positions: result.positions,
+  }));
 }

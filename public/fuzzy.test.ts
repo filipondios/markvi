@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fuzzyMatch, fuzzySearch } from "./fuzzy.ts";
+import { fuzzyMatch, fuzzySearch, fuzzySearchItems } from "./fuzzy.ts";
 
 describe("fuzzyMatch", () => {
   test("sin consulta coincide con cualquier ruta", () => {
@@ -69,5 +69,26 @@ describe("fuzzySearch", () => {
   test("desempata por ruta cuando la puntuación es igual", () => {
     const results = fuzzySearch("md", ["b.md", "a.md"]);
     expect(results.map((result) => result.path)).toEqual(["a.md", "b.md"]);
+  });
+});
+
+describe("fuzzySearchItems", () => {
+  test("busca sobre un texto propio y devuelve el elemento original", () => {
+    const items = [
+      { title: "Introducción", line: 1 },
+      { title: "Instalación", line: 10 },
+      { title: "Uso", line: 20 },
+    ];
+    const results = fuzzySearchItems("inst", items, (item) => item.title);
+    expect(results.map((result) => result.item.line)).toEqual([10]);
+    expect(results[0]!.positions).toEqual([0, 1, 2, 3]);
+  });
+
+  test("sin consulta conserva el orden y no resalta nada", () => {
+    const items = ["b", "a"];
+    expect(fuzzySearchItems("", items, (item) => item)).toEqual([
+      { item: "b", score: 0, positions: [] },
+      { item: "a", score: 0, positions: [] },
+    ]);
   });
 });

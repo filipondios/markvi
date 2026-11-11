@@ -14,7 +14,9 @@ import {
 } from "./lines.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
 import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
+import { createSelector, highlight } from "./selector.ts";
 import { parseStoredTabs, serializeTabs, type TabMode } from "./tabstore.ts";
+import { extractHeadings, type Heading } from "./toc.ts";
 import { createViewNav, type ViewCommand } from "./viewnav.ts";
 import { vimModeLabel, vimStatusText } from "./vimui.ts";
 
@@ -305,19 +307,36 @@ function halfPage(direction: 1 | -1) {
   scrollBy(0, direction * ((bottom - top) / 2));
 }
 
-function moveHeading(direction: 1 | -1, count: number) {
-  const headings = Array.from(content.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"));
-  if (headings.length === 0) {
-    notify("El documento no tiene encabezados", "warn", 2000);
-    return;
-  }
+function headingElements() {
+  return Array.from(content.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"));
+}
 
+function headingIndexAtReference() {
+  const headings = headingElements();
   const y = referenceY() + scrollY;
   let index = -1;
   headings.forEach((heading, position) => {
     if (heading.getBoundingClientRect().top + scrollY <= y) index = position;
   });
+  return index;
+}
 
+/** Línea del encabezado que se está leyendo; 1 si aún no hay ninguno. */
+function currentHeadingLine() {
+  const headings = headingElements();
+  const heading = headings[headingIndexAtReference()];
+  const line = heading ? Number(heading.dataset.line) : 1;
+  return Number.isFinite(line) ? line : 1;
+}
+
+function moveHeading(direction: 1 | -1, count: number) {
+  const headings = headingElements();
+  if (headings.length === 0) {
+    notify("El documento no tiene encabezados", "warn", 2000);
+    return;
+  }
+
+  const index = headingIndexAtReference();
   const next = Math.min(headings.length - 1, Math.max(0, index + direction * count));
   const heading = headings[next]!;
   scrollTo(0, Math.max(0, heading.getBoundingClientRect().top + scrollY - referenceY()));
@@ -1674,8 +1693,78 @@ const finder = createFinder({
   },
 });
 
+const toc = createSelector<Heading>({
+  title: "Índice del documento",
+  placeholder: "Ir a encabezado…",
+  listLabel: "Encabezados",
+  hint: "↑↓ o Ctrl+j/k mover · Enter ir · Esc cerrar",
+  empty: (query) => (query ? "Sin resultados." : "El documento no tiene encabezados."),
+  items() {
+    if (!active) return [];
+    const source = editor ? editor.view.state.doc.toString() : active.draft;
+    return extractHeadings(source).map((heading) => ({
+      key: String(heading.line),
+      label: heading.text,
+      data: heading,
+    }));
+  },
+  initial(items) {
+    if (items.length === 0) return 0;
+    let line: number;
+    if (editor) {
+      const source = editor.view.state.doc.toString();
+      line = lineAtOffset(lineStarts(source), editor.view.state.selection.main.head);
+    } else {
+      line = currentHeadingLine();
+    }
+    let index = 0;
+    items.forEach((item, position) => {
+      if (item.data.line <= line) index = position;
+    });
+    return index;
+  },
+  renderItem(item, positions) {
+    const heading = item.data;
+    const row = element("span", "", "toc-row");
+    row.style.setProperty("--toc-depth", String(heading.level - 1));
+    const level = element("span", `h${heading.level}`, "toc-level");
+    const title = element("span", "", "toc-title");
+    title.append(highlight(item.label, positions));
+    row.append(level, title);
+    return row;
+  },
+  preview(item) {
+    if (!active) return "";
+    const heading = item.data;
+    const source = editor ? editor.view.state.doc.toString() : active.draft;
+    const lines = source.split("\n");
+    const section = lines.slice(heading.line - 1, heading.sectionEnd - 1);
+    const truncated = section.length > 200;
+    const fragment = renderMarkdown(section.slice(0, 200).join("\n"), active.path);
+    if (truncated) fragment.append(element("p", "muted", "…"));
+    return fragment;
+  },
+  previewTitle(item) {
+    return item.label;
+  },
+  choose(item) {
+    const heading = item.data;
+    if (editor) {
+      const offset = cursorForLine(editor.view.state.doc.toString(), heading.line);
+      editor.view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
+      editor.view.focus();
+      return;
+    }
+    scrollToSourceLine(heading.line);
+  },
+  count(shown, total) {
+    return total > 0 ? `${shown}/${total}` : "";
+  },
+});
+
 const leader = createLeader([
   { keys: ["f"], run: () => finder.open() },
+  { keys: ["t"], run: () => { if (active) toc.open(); } },
   {
     keys: ["x"],
     run: () => {
@@ -1798,7 +1887,7 @@ document.addEventListener(
 
 document.addEventListener("keydown", (event) => {
   if (event.isComposing) return;
-  if (finder.isOpen || promptMode || hints) return;
+  if (finder.isOpen || toc.isOpen || promptMode || hints) return;
 
   const target = event.target;
   const inEditor = editor?.view.dom.contains(target as Node) ?? false;

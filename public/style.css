@@ -759,6 +759,35 @@ body.finder-open {
   background: none;
 }
 
+/* Filas del índice del documento (TOC). */
+.toc-row {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding-left: calc(var(--toc-depth, 0) * 0.9rem);
+}
+
+.toc-level {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.toc-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finder-body-single {
+  grid-template-columns: 1fr;
+}
+
 .finder-preview {
   display: flex;
   flex-direction: column;
