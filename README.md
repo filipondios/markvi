@@ -33,7 +33,8 @@ En la vista renderizada:
 | `espacio` + `x` | Cerrar la pestaña activa |
 
 Los contadores funcionan como en Vim: `5j`, `3]]`, `2gt`, `10G`. La tecla
-pendiente se muestra en la barra inferior.
+pendiente se muestra en la barra inferior. Al pulsar `espacio` y esperar unos
+300 ms aparece un panel con las continuaciones disponibles.
 
 ## Índice del documento
 
@@ -91,3 +92,10 @@ markvi ~/notas # cambia notas por tu directorio
 ```
 
 El binario incluye el frontend y no necesita `bun` instalado para ejecutarse.
+
+## Licencias
+
+La interfaz usa **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors,
+autor Cody Collier), autoalojada en `public/fonts/` bajo la SIL Open Font
+License 1.1. El texto completo está en `public/fonts/OFL.txt` y los autores en
+`public/fonts/AUTHORS.txt`. El zip original no se versiona.
