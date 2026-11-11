@@ -14,12 +14,41 @@ La app escucha solo en `127.0.0.1`. El directorio se explora en busca de archivo
 
 | Tecla | Acción |
 | --- | --- |
-| `e` | Entrar al editor desde la vista |
-| `Esc` | Guardar y volver a la vista |
-| `Ctrl+S` | Guardar |
+| `a` / `i` | Entrar al editor en modo Normal |
+| `Esc` | Volver a modo Normal |
 | `espacio` + `f` | Buscar archivos |
 | `espacio` + `←` / `→` | Cambiar de pestaña |
 | `espacio` + `x` | Cerrar la pestaña activa |
+
+## Editor Vim
+
+El editor arranca en modo Normal. Se escribe pulsando otra vez `a` / `i` (o
+`o`, `O`, etc.) ya dentro, como en Vim. `Esc` solo vuelve a Normal.
+
+`a` / `i` abren el editor en la línea que se está leyendo (o en el texto
+seleccionado, si hay una selección). Al salir, la vista vuelve al bloque de esa
+línea. Guardar es solo con comandos ex: `:w`, `:wq`, `:x` o `ZZ`.
+
+| Comando | Acción |
+| --- | --- |
+| `:w` | Guardar sin salir |
+| `:wq`, `:x`, `ZZ` | Guardar y volver a la vista |
+| `:q` | Volver a la vista si no hay cambios; si los hay, avisa y no sale |
+| `:q!`, `ZQ` | Descartar los cambios y volver a la vista |
+| `:set nu` / `:set nonu` | Números de línea absolutos (activos por defecto) |
+| `:set rnu` / `:set nornu` | Números de línea relativos (desactivados por defecto) |
+| `:set so=N` | Margen de líneas visibles alrededor del cursor (por defecto `0`) |
+
+Salir del editor siempre vuelve a la vista renderizada de la misma pestaña:
+`:q` nunca cierra la pestaña. Para cerrarla se usa `espacio` + `x`.
+
+Con el ajuste de línea activo, `j` / `k` avanzan por líneas de pantalla en
+Normal y Visual. Con un operador (`dj`, `yk`) siguen contando líneas lógicas
+del archivo. El registro por defecto es interno del editor, no el portapapeles
+del sistema.
+
+El navegador se queda con `Ctrl+W`, `Ctrl+T` y `Ctrl+N` (cerrar pestaña, abrir
+pestaña y ventana nueva), así que no se pueden usar como en Vim.
 
 ## Recarga y conflictos
 

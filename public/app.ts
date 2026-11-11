@@ -1,6 +1,14 @@
 import { createEditor, type EditorExitOptions, type EditorSession } from "./editor.ts";
 import { createFinder } from "./finder.ts";
 import { createLeader } from "./keys.ts";
+import {
+  lineAtOffset,
+  lineStartOffset,
+  lineStarts,
+  pickBlockIndex,
+  sourceLineAt,
+  type BlockBox,
+} from "./lines.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
 import { parseStoredTabs, serializeTabs, type TabMode } from "./tabstore.ts";
 import { vimModeLabel, vimStatusText } from "./vimui.ts";
@@ -62,6 +70,132 @@ let request = 0;
 let editor: EditorSession | undefined;
 let editable = false;
 let vimStatusTimer: ReturnType<typeof setInterval> | undefined;
+
+interface BlockEntry extends BlockBox {
+  element: HTMLElement;
+}
+
+let blockCache: BlockEntry[] | undefined;
+let readingElement: HTMLElement | undefined;
+let readingFrame = 0;
+
+/** Posición vertical de referencia: 30 % del área visible del contenido. */
+function referenceY() {
+  const top = bar.getBoundingClientRect().bottom;
+  const bottom = statusBar.getBoundingClientRect().top;
+  return top + (bottom - top) * 0.3;
+}
+
+function blockMap() {
+  if (blockCache) return blockCache;
+
+  const map: BlockEntry[] = [];
+  for (const element of content.querySelectorAll<HTMLElement>("[data-line]")) {
+    const line = Number(element.dataset.line);
+    const endLine = Number(element.dataset.endLine ?? element.dataset.line);
+    if (!Number.isFinite(line) || !Number.isFinite(endLine)) continue;
+    const rect = element.getBoundingClientRect();
+    map.push({
+      element,
+      line,
+      endLine,
+      top: rect.top + scrollY,
+      bottom: rect.bottom + scrollY,
+    });
+  }
+  blockCache = map;
+  return map;
+}
+
+function invalidateBlocks() {
+  blockCache = undefined;
+}
+
+function currentBlock() {
+  const map = blockMap();
+  const index = pickBlockIndex(map, referenceY() + scrollY);
+  return index < 0 ? undefined : map[index];
+}
+
+/** Línea del archivo que cruza la línea de referencia. Reutilizable. */
+function currentSourceLine() {
+  return sourceLineAt(blockMap(), referenceY() + scrollY);
+}
+
+function updateReadingIndicator() {
+  const block = !editor && active && editable ? currentBlock() : undefined;
+  if (readingElement === block?.element) return;
+  readingElement?.classList.remove("reading");
+  readingElement = block?.element;
+  readingElement?.classList.add("reading");
+}
+
+function scheduleReadingIndicator() {
+  if (readingFrame) return;
+  readingFrame = requestAnimationFrame(() => {
+    readingFrame = 0;
+    updateReadingIndicator();
+  });
+}
+
+/** Desplaza la vista para que `line` quede sobre la línea de referencia. */
+function scrollToSourceLine(line: number) {
+  const map = blockMap();
+  let block: BlockEntry | undefined;
+  for (const candidate of map) {
+    if (candidate.line <= line && line <= candidate.endLine) block = candidate;
+  }
+  if (!block) return;
+
+  const span = block.endLine - block.line;
+  const ratio = span > 0 ? (line - block.line) / span : 0;
+  const y = block.top + (block.bottom - block.top) * ratio;
+  scrollTo(0, Math.max(0, y - referenceY()));
+}
+
+function cursorForLine(source: string, line: number) {
+  const start = lineStartOffset(lineStarts(source), line);
+  const end = source.indexOf("\n", start);
+  const text = source.slice(start, end < 0 ? source.length : end);
+  const offset = text.search(/\S/);
+  return offset < 0 ? start : start + offset;
+}
+
+function selectedText() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.anchorNode) return "";
+  if (!content.contains(selection.anchorNode)) return "";
+  return selection.toString().trim();
+}
+
+function selectionRange() {
+  const node = window.getSelection()?.anchorNode;
+  const element = node instanceof Element ? node : node?.parentElement;
+  const target = element?.closest<HTMLElement>("[data-line]");
+  if (!target || !content.contains(target)) return undefined;
+  const line = Number(target.dataset.line);
+  const endLine = Number(target.dataset.endLine ?? target.dataset.line);
+  return Number.isFinite(line) && Number.isFinite(endLine) ? { line, endLine } : undefined;
+}
+
+/** Cursor de entrada al editor: selección si la hay; si no, línea de lectura. */
+function readingCursor(tab: Tab) {
+  const text = selectedText();
+  if (text) {
+    const block = selectionRange() ?? currentBlock();
+    if (block) {
+      const starts = lineStarts(tab.draft);
+      const from = lineStartOffset(starts, block.line);
+      const to =
+        block.endLine >= starts.length
+          ? tab.draft.length
+          : lineStartOffset(starts, block.endLine + 1);
+      const found = tab.draft.slice(from, to).indexOf(text);
+      if (found >= 0) return from + found;
+    }
+  }
+  return cursorForLine(tab.draft, currentSourceLine() ?? 1);
+}
 
 function pathFromUrl(url: URL) {
   if (!url.pathname.startsWith(VIEW_PREFIX)) return null;
@@ -381,15 +515,23 @@ function enterEditor(tab: Tab) {
   if (tab !== active || editor || !editable || !tab.loaded || tab.error) return;
 
   const wasView = tab.mode === "view";
+  // Desde la vista manda la posición de lectura (o la selección), no el cursor
+  // guardado de la última edición.
+  const cursor = wasView ? readingCursor(tab) : tab.cursor;
+  const screenY = wasView ? referenceY() : undefined;
+
   tab.mode = "edit";
   if (wasView) tab.scroll = scrollY;
   if (!tab.dirty) tab.draft = tab.raw;
+  tab.cursor = cursor;
 
   const host = element("div", "", "editor-host");
   content.replaceChildren(host);
   content.classList.add("editing");
+  invalidateBlocks();
   editor = createEditor(host, tab.draft, {
-    cursor: tab.cursor,
+    cursor,
+    screenY,
     onChange(value) {
       tab.draft = value;
       tab.dirty = value !== tab.raw;
@@ -402,6 +544,7 @@ function enterEditor(tab: Tab) {
     hasChanges: () => tab.dirty,
   });
 
+  updateReadingIndicator();
   setTheme();
   updateChrome();
   syncTabState();
@@ -469,6 +612,8 @@ async function recreateTab(tab: Tab) {
       } else {
         editable = true;
         content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+        invalidateBlocks();
+        updateReadingIndicator();
       }
       updateChrome();
       renderTabs();
@@ -534,6 +679,8 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
         const scroll = scrollY;
         content.replaceChildren(renderMarkdown(tab.draft, tab.path));
         scrollTo(0, scroll);
+        invalidateBlocks();
+        updateReadingIndicator();
       }
       updateChrome();
       renderTabs();
@@ -593,6 +740,8 @@ function discardChanges(tab: Tab) {
     editable = !wasDeleted;
     if (wasDeleted) content.replaceChildren(element("p", tab.error!, "error"));
     else content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+    invalidateBlocks();
+    updateReadingIndicator();
     updateChrome();
     renderTabs();
   } else {
@@ -627,7 +776,9 @@ async function exitEditor(tab: Tab, options: EditorExitOptions = {}) {
   }
 
   persistTabs();
-  await showTab(tab, tab.scroll);
+  const line = lineAtOffset(lineStarts(tab.draft), Math.min(tab.cursor, tab.draft.length));
+  await showTab(tab);
+  scrollToSourceLine(line);
 }
 
 function buildIndex(files: string[]) {
@@ -716,6 +867,8 @@ async function showIndex() {
 
   content.replaceChildren(nodes);
   scrollTo(0, 0);
+  invalidateBlocks();
+  updateReadingIndicator();
 }
 
 async function showTab(tab: Tab, scroll?: number) {
@@ -752,6 +905,8 @@ async function showTab(tab: Tab, scroll?: number) {
   if (tab.error) {
     content.replaceChildren(element("p", tab.error, "error"));
     editable = false;
+    invalidateBlocks();
+    updateReadingIndicator();
     updateChrome();
     renderTabs();
     return;
@@ -770,6 +925,8 @@ async function showTab(tab: Tab, scroll?: number) {
   if (scroll !== undefined) scrollTo(0, scroll);
   else if (location.hash && currentPath() === tab.path) scrollToHash();
   else scrollTo(0, tab.scroll);
+  invalidateBlocks();
+  updateReadingIndicator();
 }
 
 function switchTo(tab: Tab, url: URL | string = viewUrl(tab.path)) {
@@ -941,6 +1098,8 @@ async function refreshIndex() {
     const scroll = scrollY;
     content.replaceChildren(buildIndex(files));
     scrollTo(0, scroll);
+    invalidateBlocks();
+    updateReadingIndicator();
     notify("Índice actualizado", "ok", 2000);
   } catch {
     // Si el árbol falla se mantiene el índice anterior.
@@ -1149,12 +1308,20 @@ renderTabs();
 syncLayoutMetrics();
 connectEvents();
 
+const relayout = () => {
+  invalidateBlocks();
+  syncLayoutMetrics();
+  scheduleReadingIndicator();
+};
+
+window.addEventListener("scroll", scheduleReadingIndicator, { passive: true });
+window.addEventListener("resize", relayout);
+
 if (typeof ResizeObserver !== "undefined") {
-  const observer = new ResizeObserver(syncLayoutMetrics);
+  const observer = new ResizeObserver(relayout);
   observer.observe(bar);
   observer.observe(statusBar);
-} else {
-  window.addEventListener("resize", syncLayoutMetrics);
+  observer.observe(content);
 }
 
 const initialPath = currentPath();

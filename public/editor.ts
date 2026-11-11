@@ -30,6 +30,8 @@ export interface EditorOptions {
   onMessage: (message: string) => void;
   hasChanges: () => boolean;
   cursor: number;
+  /** Altura de pantalla donde debe quedar la línea del cursor al abrir. */
+  screenY?: number;
 }
 
 interface SessionControls {
@@ -227,15 +229,6 @@ export function createEditor(
       extensions: [
         // Vim debe ir antes que los demás keymaps.
         vim(),
-        keymap.of([
-          {
-            key: "Mod-s",
-            run: () => {
-              void options.onSave();
-              return true;
-            },
-          },
-        ]),
         gutterCompartment.of(number ? numberGutter(relative) : []),
         history(),
         markdown(),
@@ -256,6 +249,23 @@ export function createEditor(
   view.dispatch({ selection: { anchor: cursor } });
   active = controls;
   view.focus();
+  if (options.screenY !== undefined) {
+    const target = options.screenY;
+    const place = () => {
+      if (!view.dom.isConnected) return;
+      const block = view.lineBlockAt(cursor);
+      const top = view.scrollDOM.getBoundingClientRect().top;
+      view.scrollDOM.scrollTop = Math.max(0, block.top - (target - top));
+    };
+    place();
+    // La primera medida estima la altura; se corrige con el layout real.
+    requestAnimationFrame(() => {
+      if (!view.dom.isConnected) return;
+      const coords = view.coordsAtPos(cursor);
+      if (coords) view.scrollDOM.scrollTop += coords.top - target;
+      else place();
+    });
+  }
 
   return {
     view,

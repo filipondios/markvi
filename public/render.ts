@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import { Marked } from "marked";
 import { markedHighlight } from "marked-highlight";
+import { annotateTokenLines, type LineToken } from "./lines.ts";
 
 export const VIEW_PREFIX = "/view/";
 const FILES_PREFIX = "/files/";
@@ -20,11 +21,54 @@ const marked = new Marked(
   }),
 );
 
+// Los atributos de línea se añaden al HTML de cada bloque. DOMPurify los
+// conserva por ser `data-*`.
+const blockRenderers = [
+  "heading",
+  "paragraph",
+  "list",
+  "listitem",
+  "blockquote",
+  "code",
+  "table",
+  "hr",
+] as const;
+const renderer = marked.defaults.renderer;
+if (renderer) {
+  const methods = renderer as unknown as Record<
+    string,
+    (token: LineToken, ...args: unknown[]) => string
+  >;
+  for (const name of blockRenderers) {
+    const original = methods[name];
+    if (typeof original !== "function") continue;
+    methods[name] = function (this: unknown, token: LineToken, ...args: unknown[]) {
+      return addLineAttributes(original.call(this, token, ...args), token);
+    };
+  }
+}
+
+function addLineAttributes(html: string, token: LineToken): string {
+  if (token.line === undefined) return html;
+  const endLine = token.endLine ?? token.line;
+  return html.replace(
+    /^<([a-zA-Z][\w-]*)/,
+    `<$1 data-line="${token.line}" data-end-line="${endLine}"`,
+  );
+}
+
 export function renderMarkdown(source: string, path: string): DocumentFragment {
+  // Se lexa una sola vez para anotar las líneas antes de renderizar. El hook de
+  // marked-highlight también se ejecuta a mano porque no pasamos por `parse`.
+  const tokens = marked.lexer(source);
+  const walk = marked.defaults.walkTokens;
+  if (walk) marked.walkTokens(tokens, walk);
+  annotateTokenLines(tokens as unknown as LineToken[], source);
+
   // El contenido de un <template> es inerte: las imágenes no se piden hasta
   // insertarlo, ya con las URLs reescritas.
   const template = document.createElement("template");
-  template.innerHTML = DOMPurify.sanitize(marked.parse(source, { async: false }));
+  template.innerHTML = DOMPurify.sanitize(marked.parser(tokens));
   const content = template.content;
   rewriteUrls(content, path);
   markTaskItems(content);
