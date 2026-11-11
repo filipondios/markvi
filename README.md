@@ -12,13 +12,27 @@ La app escucha solo en `127.0.0.1`. El directorio se explora en busca de archivo
 
 ## Atajos
 
+En la vista renderizada:
+
 | Tecla | Acción |
 | --- | --- |
+| `j` / `k` | Bloque siguiente / anterior |
+| `Ctrl-d` / `Ctrl-u` | Media página abajo / arriba |
+| `gg` / `G` | Inicio / final del documento |
+| `]]` / `[[` | Encabezado siguiente / anterior |
+| `/` / `?` | Buscar en el documento |
+| `n` / `N` | Coincidencia siguiente / anterior |
+| `f` | Seguir un enlace con pistas |
+| `gt` / `gT` | Pestaña siguiente / anterior |
+| `{n}gt` | Ir a la pestaña n |
+| `Ctrl-o` / `Ctrl-i` | Atrás / adelante en el historial |
+| `:` | Comando (`:e`, `:q`, `:w`) |
 | `a` / `i` | Entrar al editor en modo Normal |
-| `Esc` | Volver a modo Normal |
 | `espacio` + `f` | Buscar archivos |
-| `espacio` + `←` / `→` | Cambiar de pestaña |
 | `espacio` + `x` | Cerrar la pestaña activa |
+
+Los contadores funcionan como en Vim: `5j`, `3]]`, `2gt`, `10G`. La tecla
+pendiente se muestra en la barra inferior.
 
 ## Editor Vim
 
@@ -26,8 +40,9 @@ El editor arranca en modo Normal. Se escribe pulsando otra vez `a` / `i` (o
 `o`, `O`, etc.) ya dentro, como en Vim. `Esc` solo vuelve a Normal.
 
 `a` / `i` abren el editor en la línea que se está leyendo (o en el texto
-seleccionado, si hay una selección). Al salir, la vista vuelve al bloque de esa
-línea. Guardar es solo con comandos ex: `:w`, `:wq`, `:x` o `ZZ`.
+seleccionado, si hay una selección). Un doble clic en un bloque abre el editor
+en la línea de ese punto. Al salir, la vista vuelve al bloque de esa línea.
+Guardar es solo con comandos ex: `:w`, `:wq`, `:x` o `ZZ`.
 
 | Comando | Acción |
 | --- | --- |
@@ -44,8 +59,8 @@ Salir del editor siempre vuelve a la vista renderizada de la misma pestaña:
 
 Con el ajuste de línea activo, `j` / `k` avanzan por líneas de pantalla en
 Normal y Visual. Con un operador (`dj`, `yk`) siguen contando líneas lógicas
-del archivo. El registro por defecto es interno del editor, no el portapapeles
-del sistema.
+del archivo. `gt` / `gT` cambian de pestaña también desde modo Normal. El
+registro por defecto es interno del editor, no el portapapeles del sistema.
 
 El navegador se queda con `Ctrl+W`, `Ctrl+T` y `Ctrl+N` (cerrar pestaña, abrir
 pestaña y ventana nueva), así que no se pueden usar como en Vim.
