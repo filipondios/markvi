@@ -109,6 +109,9 @@ interface HintState {
 
 let blockCache: BlockEntry[] | undefined;
 let readingElement: HTMLElement | undefined;
+// Bloque marcado a restaurar tras un relayout (imágenes, resize) para que el
+// cursor explícito no salte a la referencia geométrica.
+let keptCursorElement: HTMLElement | undefined;
 const readingCursorState = createReadingCursor();
 let programmaticScrollTarget: number | undefined;
 const readingMarker = document.createElement("span");
@@ -117,7 +120,6 @@ readingMarker.textContent = "▸";
 readingMarker.setAttribute("aria-hidden", "true");
 document.body.append(readingMarker);
 let readingFrame = 0;
-let markerTargetY = 0;
 
 const viewNav = createViewNav();
 let searchState: SearchState | undefined;
@@ -154,6 +156,10 @@ function blockMap() {
 }
 
 function invalidateBlocks() {
+  keptCursorElement =
+    readingCursorState.index !== undefined && readingElement?.isConnected
+      ? readingElement
+      : undefined;
   blockCache = undefined;
   readingCursorState.clear();
   if (!readingElement?.isConnected) readingElement = undefined;
@@ -165,6 +171,11 @@ function readingBlocks() {
 
 function currentNavigationIndex() {
   const blocks = readingBlocks();
+  if (keptCursorElement) {
+    const kept = blocks.findIndex((block) => block.element === keptCursorElement);
+    keptCursorElement = undefined;
+    if (kept >= 0) readingCursorState.set(kept, blocks.length);
+  }
   const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
   const readingY = readingReferenceY(
     referenceY() + scrollY,
@@ -192,7 +203,9 @@ function currentSourceLine() {
     scrollY,
     maxScroll,
   );
-  return interpolateLine(block, Math.min(block.bottom, Math.max(block.top, y)));
+  // Dentro del bloque se interpola; si el cursor se movió a un bloque que la
+  // referencia no toca (scroll topado, clic), la línea es la de inicio del bloque.
+  return y >= block.top && y <= block.bottom ? interpolateLine(block, y) : block.line;
 }
 
 /** Bloque bajo un punto de la página; si el punto cae en un hueco, el anterior. */
@@ -230,7 +243,6 @@ function updateReadingIndicator() {
   }
 
   if (!block) {
-    markerTargetY = 0;
     readingMarker.hidden = true;
     return;
   }
@@ -239,19 +251,32 @@ function updateReadingIndicator() {
   const blockRect = block.element.getBoundingClientRect();
   const viewTop = bar.getBoundingClientRect().bottom + 2;
   const viewBottom = statusBar.getBoundingClientRect().top - 2;
-  const lineHeight = Number.parseFloat(getComputedStyle(block.element).lineHeight);
-  const fontSize = Number.parseFloat(getComputedStyle(block.element).fontSize);
+  const style = getComputedStyle(block.element);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  const fontSize = Number.parseFloat(style.fontSize);
   const firstLineHeight = Number.isFinite(lineHeight)
     ? lineHeight
     : Number.isFinite(fontSize)
       ? fontSize * 1.65
       : 24;
-  const targetY = blockRect.top < viewTop ? viewTop : Math.min(blockRect.top, viewBottom - firstLineHeight);
+  // Primera línea de texto: el bloque puede llevar borde/relleno superior (código, citas).
+  const inset =
+    (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.borderTopWidth) || 0);
+  const lineTop = blockRect.top + inset;
+  const targetY = lineTop < viewTop ? viewTop : Math.min(lineTop, viewBottom - firstLineHeight);
+  const y = targetY + Math.max(0, (firstLineHeight - 18) / 2);
 
-  markerTargetY += (targetY - markerTargetY) * 0.15;
+  // Sin suavizado propio: la transición CSS de 120 ms desliza el marcador y llega
+  // siempre al destino. Al aparecer por primera vez se coloca sin animar.
+  const wasHidden = readingMarker.hidden;
   readingMarker.hidden = false;
+  if (wasHidden) readingMarker.style.transition = "none";
   readingMarker.style.left = `${contentRect.left + 1}px`;
-  readingMarker.style.transform = `translateY(${markerTargetY + Math.max(0, (firstLineHeight - 18) / 2)}px)`;
+  readingMarker.style.transform = `translateY(${y}px)`;
+  if (wasHidden) {
+    void readingMarker.offsetWidth;
+    readingMarker.style.transition = "";
+  }
 }
 
 function scheduleReadingIndicator() {
@@ -412,31 +437,33 @@ function goBottom(count?: number) {
   scrollToBlock(index);
 }
 
+/** Ctrl-d / Ctrl-u: media página de scroll y el cursor avanza lo mismo, como en
+ * Vim; con el scroll topado el cursor sigue moviéndose. */
 function halfPage(direction: 1 | -1) {
   const top = bar.getBoundingClientRect().bottom;
   const bottom = statusBar.getBoundingClientRect().top;
+  const half = (bottom - top) / 2;
   const blocks = navigationBlocks();
   const { index } = currentNavigationIndex();
+  if (index < 0) return;
+
   const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const targetY = Math.min(maxScroll, Math.max(0, scrollY + direction * ((bottom - top) / 2)));
-  const next = readingBlockIndex(
-    blocks,
-    referenceY() + targetY,
-    targetY,
-    maxScroll,
-    statusBar.getBoundingClientRect().top + targetY,
+  const targetY = Math.min(maxScroll, Math.max(0, scrollY + direction * half));
+  const wanted = pickBlockIndex(blocks, blocks[index]!.top + direction * half);
+  const next = Math.min(
+    blocks.length - 1,
+    Math.max(0, direction > 0 ? Math.max(wanted, index + 1) : Math.min(wanted, index - 1)),
   );
-  if (next >= 0 && next !== index) {
-    readingCursorState.set(next, blocks.length);
+  readingCursorState.set(next, blocks.length);
+
+  if (Math.abs(scrollY - targetY) > 1) {
     programmaticScrollTarget = targetY;
     scrollTo(0, targetY);
     setTimeout(() => {
       if (programmaticScrollTarget === targetY) programmaticScrollTarget = undefined;
     }, 100);
-    scheduleReadingIndicator();
-  } else {
-    scrollBy(0, direction * ((bottom - top) / 2));
   }
+  scheduleReadingIndicator();
 }
 
 function headingElements() {
@@ -2187,6 +2214,8 @@ content.addEventListener("click", (event) => {
   if (editor || !active || !editable || event.button !== 0) return;
   if (promptMode || hints) return;
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  // El segundo clic de un doble clic abre el editor (dblclick): no se mueve dos veces.
+  if (event.detail > 1) return;
 
   const target = event.target instanceof Element ? event.target : null;
   // Los enlaces navegan con el primer clic; no reasignamos el marcador.
@@ -2198,11 +2227,10 @@ content.addEventListener("click", (event) => {
   const line = lineAtPoint(target, event.clientY);
   if (line === undefined) return;
 
-  event.preventDefault();
+  // El punto ya está a la vista: se fija el cursor sin desplazar la página.
   const index = sourceBlockIndex(line);
   if (index < 0) return;
   readingCursorState.set(index, navigationBlocks().length);
-  scrollToSourceLine(line);
   scheduleReadingIndicator();
 });
 
@@ -2354,6 +2382,38 @@ window.addEventListener(
     const next = readingBlockIndex(blocks, readingY, scrollY, maxScroll);
     readingCursorState.set(next, blocks.length);
     scheduleReadingIndicator();
+  },
+  { passive: true },
+);
+// En los topes del scroll (o en documentos sin scroll) la rueda ya no produce
+// eventos `scroll`: se traduce en pasos del cursor de bloque hasta el primero/último.
+let wheelAccum = 0;
+let wheelTime = 0;
+window.addEventListener(
+  "wheel",
+  (event) => {
+    if (editor || !active || !editable || event.ctrlKey || event.deltaY === 0) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('[role="dialog"]')) return;
+
+    const direction = event.deltaY > 0 ? 1 : -1;
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    const atEdge =
+      maxScroll <= 1 ||
+      (direction < 0 && scrollY <= 0) ||
+      (direction > 0 && scrollY >= maxScroll - 1);
+    if (!atEdge) {
+      wheelAccum = 0;
+      return;
+    }
+
+    const now = performance.now();
+    if (now - wheelTime > 200 || Math.sign(wheelAccum) !== direction) wheelAccum = 0;
+    wheelTime = now;
+    wheelAccum += event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    if (Math.abs(wheelAccum) < 40) return;
+    wheelAccum = 0;
+    moveBlock(direction);
   },
   { passive: true },
 );

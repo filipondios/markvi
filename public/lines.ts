@@ -150,6 +150,10 @@ export function readingBlockIndex(
 ): number {
   if (blocks.length === 0) return -1;
   if (maxScroll <= 1) return pickBlockIndex(blocks, y);
+  // En los topes el cursor se fuerza a los extremos: la línea de referencia
+  // (30 %) nunca alcanzaría los bloques de arriba/abajo.
+  if (scrollTop <= 1) return 0;
+  if (maxScroll - scrollTop <= 1) return blocks.length - 1;
   const readingY = viewportBottom === undefined
     ? y
     : readingReferenceY(y, viewportBottom, scrollTop, maxScroll);

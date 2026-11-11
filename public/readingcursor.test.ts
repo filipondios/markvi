@@ -13,6 +13,12 @@ test("elige el primer y último bloque en los límites de scroll", () => {
   expect(readingBlockIndex(blocks, 800, 900, 900)).toBe(2);
 });
 
+test("fuerza el primer/último bloque en los topes aunque la referencia caiga más abajo/arriba", () => {
+  expect(readingBlockIndex(blocks, 450, 0, 900)).toBe(0);
+  expect(readingBlockIndex(blocks, 120, 900, 900)).toBe(2);
+  expect(readingBlockIndex(blocks, 450, 450, 900)).toBe(2);
+});
+
 test("la referencia de lectura baja progresivamente en el tramo final del scroll", () => {
   const reference = 300;
   const viewportBottom = 900;
