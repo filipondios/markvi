@@ -192,7 +192,7 @@ export function createEditor(
       "&": { height: "100%", backgroundColor: "var(--bg)", color: "var(--fg)" },
       ".cm-scroller": {
         overflow: "auto",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        fontFamily: "var(--font-mono)",
         lineHeight: "1.6",
       },
       ".cm-content": { padding: "1rem 0" },

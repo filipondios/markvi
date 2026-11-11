@@ -5,22 +5,30 @@
 export interface LeaderAction {
   /** Teclas que siguen a la líder. */
   keys: readonly string[];
+  /** Texto para el panel which-key. */
+  label?: string;
   run: () => void;
 }
 
 export interface LeaderOptions {
   /** Milisegundos antes de olvidar la secuencia pendiente. `0` la desactiva. */
   timeout?: number;
+  /** Se llama al cancelar la secuencia (timeout, fallo o acción ejecutada). */
+  onCancel?: () => void;
 }
 
 export type LeaderFeedResult = "pending" | "handled" | "miss" | "ignored";
 
 export interface Leader {
   readonly active: boolean;
+  /** Secuencia pendiente, sin la tecla líder. */
+  readonly pending: readonly string[];
   start(): void;
   cancel(): void;
   /** Procesa una tecla pulsada mientras la líder está activa. */
   feed(key: string): LeaderFeedResult;
+  /** Acciones que continúan la secuencia pendiente. */
+  available(): readonly LeaderAction[];
 }
 
 const sameSequence = (a: readonly string[], b: readonly string[]) =>
@@ -28,15 +36,17 @@ const sameSequence = (a: readonly string[], b: readonly string[]) =>
 
 export function createLeader(actions: readonly LeaderAction[], options: LeaderOptions = {}): Leader {
   const timeout = options.timeout ?? 800;
-  let pending: string[] | null = null;
+  let sequence: string[] | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const cancel = () => {
-    pending = null;
+    const wasActive = sequence !== null;
+    sequence = null;
     if (timer !== undefined) {
       clearTimeout(timer);
       timer = undefined;
     }
+    if (wasActive) options.onCancel?.();
   };
 
   const arm = () => {
@@ -46,22 +56,36 @@ export function createLeader(actions: readonly LeaderAction[], options: LeaderOp
 
   return {
     get active() {
-      return pending !== null;
+      return sequence !== null;
+    },
+
+    get pending() {
+      return sequence ? [...sequence] : [];
     },
 
     start() {
-      pending = [];
+      sequence = [];
       arm();
     },
 
     cancel,
 
-    feed(key) {
-      if (pending === null) return "ignored";
-      const sequence = [...pending, key];
-      pending = sequence;
+    available() {
+      const current = sequence;
+      if (current === null) return [];
+      return actions.filter(
+        (action) =>
+          action.keys.length > current.length &&
+          sameSequence(action.keys.slice(0, current.length), current),
+      );
+    },
 
-      const exact = actions.find((action) => sameSequence(action.keys, sequence));
+    feed(key) {
+      if (sequence === null) return "ignored";
+      const next = [...sequence, key];
+      sequence = next;
+
+      const exact = actions.find((action) => sameSequence(action.keys, next));
       if (exact) {
         cancel();
         exact.run();
@@ -70,8 +94,8 @@ export function createLeader(actions: readonly LeaderAction[], options: LeaderOp
 
       const isPrefix = actions.some(
         (action) =>
-          action.keys.length > sequence.length &&
-          sameSequence(action.keys.slice(0, sequence.length), sequence),
+          action.keys.length > next.length &&
+          sameSequence(action.keys.slice(0, next.length), next),
       );
       if (isPrefix) {
         arm();

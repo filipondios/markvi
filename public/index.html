@@ -9,13 +9,7 @@
   </head>
   <body>
     <header id="bar">
-      <div id="bar-row">
-        <a href="/">markvi</a>
-        <span id="path"></span>
-        <div id="actions">
-          <button id="mode" type="button" aria-label="Editar (a)" title="Editar (a)">Editar</button>
-        </div>
-      </div>
+      <a id="brand" href="/">markvi</a>
       <div id="tabs" role="tablist" aria-label="Pestañas" hidden></div>
     </header>
     <main id="content"></main>
@@ -30,10 +24,13 @@
       />
     </div>
     <footer id="status" role="status" aria-live="polite">
-      <span id="status-mode">Índice</span>
+      <span id="status-mode" data-mode="index">Índice</span>
+      <span id="status-path"></span>
+      <span id="status-dirty" hidden aria-hidden="true">●</span>
       <span id="status-vim"></span>
       <span id="status-state">Listo</span>
       <span id="status-message"></span>
+      <span id="status-position" aria-hidden="true"></span>
       <span id="status-actions"></span>
     </footer>
     <script type="module" src="./app.ts"></script>

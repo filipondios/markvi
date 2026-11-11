@@ -15,21 +15,22 @@ import {
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
 import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
 import { createSelector, highlight } from "./selector.ts";
-import { parseStoredTabs, serializeTabs, type TabMode } from "./tabstore.ts";
+import { parseStoredTabs, serializeTabs, tabLabels, type TabMode } from "./tabstore.ts";
 import { extractHeadings, type Heading } from "./toc.ts";
 import { createViewNav, type ViewCommand } from "./viewnav.ts";
 import { vimModeLabel, vimStatusText } from "./vimui.ts";
 
 const content = document.querySelector<HTMLElement>("#content")!;
-const crumb = document.querySelector<HTMLElement>("#path")!;
-const modeButton = document.querySelector<HTMLButtonElement>("#mode")!;
 const tabBar = document.querySelector<HTMLElement>("#tabs")!;
 const bar = document.querySelector<HTMLElement>("#bar")!;
 const statusBar = document.querySelector<HTMLElement>("#status")!;
 const statusMode = document.querySelector<HTMLElement>("#status-mode")!;
+const statusPath = document.querySelector<HTMLElement>("#status-path")!;
+const statusDirty = document.querySelector<HTMLElement>("#status-dirty")!;
 const statusVim = document.querySelector<HTMLElement>("#status-vim")!;
 const statusState = document.querySelector<HTMLElement>("#status-state")!;
 const statusMessage = document.querySelector<HTMLElement>("#status-message")!;
+const statusPosition = document.querySelector<HTMLElement>("#status-position")!;
 const statusActions = document.querySelector<HTMLElement>("#status-actions")!;
 const promptBar = document.querySelector<HTMLElement>("#prompt")!;
 const promptPrefix = document.querySelector<HTMLElement>("#prompt-prefix")!;
@@ -79,6 +80,7 @@ let active: Tab | null = null;
 let request = 0;
 let editor: EditorSession | undefined;
 let editable = false;
+let loading = false;
 let vimStatusTimer: ReturnType<typeof setInterval> | undefined;
 
 interface BlockEntry extends BlockBox {
@@ -195,6 +197,7 @@ function scheduleReadingIndicator() {
   readingFrame = requestAnimationFrame(() => {
     readingFrame = 0;
     updateReadingIndicator();
+    updateStatusPosition();
   });
 }
 
@@ -840,10 +843,11 @@ function statusActionsFor(tab: Tab): StatusAction[] {
 
 function renderStatusActions(actions: StatusAction[]) {
   statusActions.replaceChildren(
-    ...actions.map((action) => {
+    ...actions.map((action, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = action.label;
+      button.dataset.primary = String(index === 0);
       button.addEventListener("click", () => {
         action.run();
         editor?.view.focus();
@@ -851,6 +855,23 @@ function renderStatusActions(actions: StatusAction[]) {
       return button;
     }),
   );
+}
+
+function updateStatusPosition() {
+  let text = "";
+
+  if (editor) {
+    const state = editor.view.state;
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    text = `${line.number}:${head - line.from + 1}`;
+  } else if (active && editable) {
+    const total = lineStarts(active.draft).length;
+    const line = currentSourceLine() ?? 1;
+    text = `ln ${line}/${total}`;
+  }
+
+  if (statusPosition.textContent !== text) statusPosition.textContent = text;
 }
 
 function paintVimStatus() {
@@ -861,19 +882,27 @@ function paintVimStatus() {
 
   const status = editor.vimStatus();
   statusMode.textContent = vimModeLabel(status.mode);
+  statusMode.dataset.mode = status.mode;
   statusVim.textContent = vimStatusText(status);
+  updateStatusPosition();
 }
 
 function renderStatus() {
   const tab = active;
-  statusMode.textContent = tab ? (editor ? vimModeLabel(editor.vimStatus().mode) : "Vista") : "Índice";
+  const mode = editor ? editor.vimStatus().mode : tab ? "view" : "index";
+  statusMode.textContent = editor ? vimModeLabel(mode) : tab ? "Vista" : "Índice";
+  statusMode.dataset.mode = mode;
   statusVim.textContent = editor ? vimStatusText(editor.vimStatus()) : viewNav.pending;
+  statusPath.textContent = tab ? tab.path : "";
+  statusDirty.hidden = !tab?.dirty;
 
   let state = "Listo";
   let tone: StatusTone = "ok";
   let message = "";
 
-  if (tab) {
+  if (loading) {
+    state = "Cargando";
+  } else if (tab) {
     if (tab.conflict === "changed") {
       state = "Conflicto";
       tone = "warn";
@@ -905,14 +934,16 @@ function renderStatus() {
   statusMessage.dataset.tone = tone;
   statusMessage.title = message;
 
+  updateStatusPosition();
   renderStatusActions(tab ? statusActionsFor(tab) : []);
 }
 
 function renderTabs() {
   tabBar.hidden = tabs.length === 0;
   const fragment = document.createDocumentFragment();
+  const labels = tabLabels(tabs.map((tab) => tab.path));
 
-  for (const tab of tabs) {
+  tabs.forEach((tab, index) => {
     const item = element("div", "", "tab");
     item.dataset.path = tab.path;
     item.classList.toggle("is-active", tab === active);
@@ -922,7 +953,7 @@ function renderTabs() {
     const link = document.createElement("a");
     link.className = "tab-link";
     link.href = viewUrl(tab.path);
-    link.textContent = tab.path.split("/").pop() ?? tab.path;
+    link.textContent = labels[index] ?? tab.path;
     link.title = tab.path;
     link.setAttribute("role", "tab");
     link.setAttribute("aria-selected", String(tab === active));
@@ -947,7 +978,7 @@ function renderTabs() {
 
     item.append(link, close);
     fragment.append(item);
-  }
+  });
 
   tabBar.replaceChildren(fragment);
   syncLayoutMetrics();
@@ -966,16 +997,6 @@ function syncTabState() {
 
 function updateChrome() {
   const tab = active;
-  const editing = !!editor;
-  modeButton.textContent = editing ? "Vim" : "Editar";
-  modeButton.setAttribute("aria-pressed", String(editing));
-  modeButton.setAttribute(
-    "aria-label",
-    editing ? "Editor Vim: :wq guarda y sale" : "Editar (a)",
-  );
-  modeButton.title = editing ? "Editor Vim: :wq guarda y sale" : "Editar (a)";
-  modeButton.disabled = editing || !tab || !editable;
-
   document.title = tab ? `${tab.dirty ? "● " : ""}${tab.path} · markvi` : "markvi";
   renderStatus();
 }
@@ -1155,6 +1176,11 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
   // invalida la petición anterior para que no pinte contenido viejo al llegar.
   const id = tab === active ? ++request : undefined;
 
+  if (tab === active) {
+    loading = true;
+    updateChrome();
+  }
+
   try {
     const file = await loadFile(tab.path);
     if (id !== undefined && id !== request) return false;
@@ -1179,6 +1205,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
         invalidateBlocks();
         updateReadingIndicator();
       }
+      loading = false;
       updateChrome();
       renderTabs();
     } else {
@@ -1204,7 +1231,14 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
         tab.error = "Archivo no encontrado.";
         if (tab === active && !editor) {
           clearSearch();
-          content.replaceChildren(element("p", tab.error, "error"));
+          content.replaceChildren(
+            renderErrorState(
+              "No se pudo recargar el archivo",
+              tab.error,
+              "Reintentar",
+              () => void reloadTab(tab, { discard: true }),
+            ),
+          );
           editable = false;
         }
       }
@@ -1213,6 +1247,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
       notify(`No se pudo recargar: ${message}`, "error", 0);
     }
 
+    if (tab === active) loading = false;
     updateChrome();
     syncTabState();
     return false;
@@ -1280,24 +1315,79 @@ async function exitEditor(tab: Tab, options: EditorExitOptions = {}) {
   scrollToSourceLine(line);
 }
 
+function renderErrorState(
+  title: string,
+  message: string,
+  actionLabel: string,
+  action: () => void,
+) {
+  const wrapper = element("div", "", "state state-error");
+  wrapper.append(element("h2", title));
+  wrapper.append(element("p", message, "muted"));
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = actionLabel;
+  button.addEventListener("click", action);
+  wrapper.append(button);
+  return wrapper;
+}
+
 function buildIndex(files: string[]) {
-  const fragment = document.createDocumentFragment();
-  fragment.append(element("h1", "Archivos"));
+  const wrapper = element("div", "", "index");
+  const header = element("div", "", "index-header");
+  header.append(element("h1", "Archivos"));
+  header.append(
+    element("p", "espacio + f buscar · espacio + t índice · Enter abrir", "index-hint"),
+  );
+  wrapper.append(header);
+
   if (files.length === 0) {
-    fragment.append(element("p", "No hay archivos .md en este directorio.", "muted"));
-    return fragment;
+    wrapper.append(element("p", "No hay archivos .md en este directorio.", "index-empty"));
+    return wrapper;
   }
 
-  const list = element("ul", "", "files");
-  for (const file of files) {
-    const link = element("a", file);
-    link.href = viewUrl(file);
-    const item = document.createElement("li");
-    item.append(link);
-    list.append(item);
+  if (tabs.length > 0) {
+    const section = element("section", "", "index-group");
+    section.append(element("h2", "Recientes"));
+    const list = element("ul", "", "files");
+    for (const tab of tabs) {
+      const link = element("a", tab.path);
+      link.href = viewUrl(tab.path);
+      const item = document.createElement("li");
+      item.append(link);
+      list.append(item);
+    }
+    section.append(list);
+    wrapper.append(section);
   }
-  fragment.append(list);
-  return fragment;
+
+  const groups = new Map<string, string[]>();
+  for (const file of files) {
+    const slash = file.lastIndexOf("/");
+    const dir = slash < 0 ? "" : file.slice(0, slash);
+    const group = groups.get(dir);
+    if (group) group.push(file);
+    else groups.set(dir, [file]);
+  }
+
+  for (const [dir, group] of groups) {
+    const section = element("section", "", "index-group");
+    section.append(element("h2", dir || "Raíz"));
+    const list = element("ul", "", "files");
+    for (const file of group) {
+      const name = dir ? file.slice(dir.length + 1) : file;
+      const link = element("a", name);
+      link.href = viewUrl(file);
+      link.title = file;
+      const item = document.createElement("li");
+      item.append(link);
+      list.append(item);
+    }
+    section.append(list);
+    wrapper.append(section);
+  }
+
+  return wrapper;
 }
 
 async function loadFile(path: string) {
@@ -1354,7 +1444,7 @@ async function showIndex() {
   closeHints();
   closePrompt();
   content.classList.remove("editing");
-  crumb.textContent = "";
+  loading = true;
   updateChrome();
   renderTabs();
 
@@ -1363,15 +1453,22 @@ async function showIndex() {
     const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
     nodes = buildIndex(files);
   } catch (error) {
-    nodes = element("p", error instanceof Error ? error.message : String(error), "error");
+    nodes = renderErrorState(
+      "No se pudo cargar el índice",
+      error instanceof Error ? error.message : String(error),
+      "Reintentar",
+      () => void showIndex(),
+    );
   }
   if (id !== request) return;
 
+  loading = false;
   content.replaceChildren(nodes);
   scrollTo(0, 0);
   clearSearch();
   invalidateBlocks();
   updateReadingIndicator();
+  updateChrome();
 }
 
 async function showTab(tab: Tab, scroll?: number) {
@@ -1383,11 +1480,12 @@ async function showTab(tab: Tab, scroll?: number) {
   closeHints();
   closePrompt();
   content.classList.remove("editing");
-  crumb.textContent = tab.path;
   updateChrome();
   renderTabs();
 
   if (!tab.loaded) {
+    loading = true;
+    updateChrome();
     try {
       const file = await loadFile(tab.path);
       if (id !== request) return;
@@ -1403,6 +1501,8 @@ async function showTab(tab: Tab, scroll?: number) {
       tab.loaded = false;
       tab.etag = undefined;
       if (error instanceof ApiError && error.status === 404) tab.conflict = "deleted";
+    } finally {
+      if (id === request) loading = false;
     }
   }
 
@@ -1410,7 +1510,14 @@ async function showTab(tab: Tab, scroll?: number) {
 
   if (tab.error) {
     clearSearch();
-    content.replaceChildren(element("p", tab.error, "error"));
+    content.replaceChildren(
+      renderErrorState(
+        "No se pudo abrir el archivo",
+        tab.error,
+        "Reintentar",
+        () => void showTab(tab),
+      ),
+    );
     editable = false;
     invalidateBlocks();
     updateReadingIndicator();
@@ -1762,20 +1869,70 @@ const toc = createSelector<Heading>({
   },
 });
 
-const leader = createLeader([
-  { keys: ["f"], run: () => finder.open() },
-  { keys: ["t"], run: () => { if (active) toc.open(); } },
-  {
-    keys: ["x"],
-    run: () => {
-      if (active) closeTab(active);
-    },
-  },
-]);
+const whichKey = element("div", "", "which-key");
+whichKey.hidden = true;
+whichKey.setAttribute("role", "status");
+whichKey.setAttribute("aria-live", "polite");
+document.body.append(whichKey);
 
-modeButton.addEventListener("click", () => {
-  if (active && !editor) enterEditor(active);
-});
+let whichKeyTimer: ReturnType<typeof setTimeout> | undefined;
+
+function hideWhichKey() {
+  if (whichKeyTimer !== undefined) {
+    clearTimeout(whichKeyTimer);
+    whichKeyTimer = undefined;
+  }
+  whichKey.hidden = true;
+}
+
+function paintWhichKey() {
+  const actions = leader.available();
+  if (actions.length === 0) {
+    hideWhichKey();
+    return;
+  }
+
+  const pending = leader.pending;
+  const fragment = document.createDocumentFragment();
+  for (const action of actions) {
+    const row = element("div", "", "which-key-row");
+    const key = element("kbd", action.keys[pending.length] ?? "", "which-key-key");
+    const label = element("span", action.label ?? action.keys.join(""), "which-key-label");
+    row.append(key, label);
+    fragment.append(row);
+  }
+  whichKey.replaceChildren(fragment);
+  whichKey.hidden = false;
+}
+
+function scheduleWhichKey() {
+  if (whichKeyTimer !== undefined) clearTimeout(whichKeyTimer);
+  whichKeyTimer = setTimeout(() => {
+    whichKeyTimer = undefined;
+    if (leader.active) paintWhichKey();
+  }, 300);
+}
+
+const leader = createLeader(
+  [
+    { keys: ["f"], label: "Buscar archivo", run: () => finder.open() },
+    {
+      keys: ["t"],
+      label: "Índice del documento",
+      run: () => {
+        if (active) toc.open();
+      },
+    },
+    {
+      keys: ["x"],
+      label: "Cerrar pestaña",
+      run: () => {
+        if (active) closeTab(active);
+      },
+    },
+  ],
+  { onCancel: hideWhichKey },
+);
 
 document.addEventListener("click", (event) => {
   if (event.defaultPrevented || event.button !== 0) return;
@@ -1872,7 +2029,9 @@ document.addEventListener(
     if (leader.active) {
       event.preventDefault();
       event.stopPropagation();
-      leader.feed(event.key);
+      hideWhichKey();
+      const result = leader.feed(event.key);
+      if (result === "pending") scheduleWhichKey();
       return;
     }
 
@@ -1880,6 +2039,7 @@ document.addEventListener(
       event.preventDefault();
       event.stopPropagation();
       leader.start();
+      scheduleWhichKey();
     }
   },
   true,
@@ -1895,13 +2055,16 @@ document.addEventListener("keydown", (event) => {
 
   if (leader.active) {
     event.preventDefault();
-    leader.feed(event.key);
+    hideWhichKey();
+    const result = leader.feed(event.key);
+    if (result === "pending") scheduleWhichKey();
     return;
   }
 
   if (event.key === " ") {
     event.preventDefault();
     leader.start();
+    scheduleWhichKey();
     return;
   }
 

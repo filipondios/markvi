@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isSafePath, parseStoredTabs, serializeTabs } from "./tabstore.ts";
+import { isSafePath, parseStoredTabs, serializeTabs, tabLabels } from "./tabstore.ts";
 
 describe("isSafePath", () => {
   test("acepta rutas Markdown relativas", () => {
@@ -58,5 +58,20 @@ describe("serializeTabs", () => {
       { path: "notas/otra.md", mode: "edit" as const },
     ];
     expect(parseStoredTabs(serializeTabs(tabs))).toEqual(tabs);
+  });
+});
+
+describe("tabLabels", () => {
+  test("usa el nombre del archivo si no se repite", () => {
+    expect(tabLabels(["TODO.md", "notas/otra.md"])).toEqual(["TODO.md", "otra.md"]);
+  });
+
+  test("añade la carpeta mínima para desambiguar", () => {
+    expect(tabLabels(["a/x.md", "b/x.md"])).toEqual(["a/x.md", "b/x.md"]);
+    expect(tabLabels(["a/b/x.md", "c/b/x.md"])).toEqual(["a/b/x.md", "c/b/x.md"]);
+  });
+
+  test("mantiene el nombre raíz si no hay carpeta que añadir", () => {
+    expect(tabLabels(["x.md", "notas/x.md"])).toEqual(["x.md", "notas/x.md"]);
   });
 });

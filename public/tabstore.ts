@@ -48,3 +48,19 @@ export function parseStoredTabs(raw: string | null): StoredTab[] {
 export function serializeTabs(tabs: readonly StoredTab[]) {
   return JSON.stringify({ tabs });
 }
+
+/** Etiquetas de pestaña: el sufijo más corto que no se repita entre rutas. */
+export function tabLabels(paths: readonly string[]): string[] {
+  const parts = paths.map((path) => path.split("/"));
+  return parts.map((segments, index) => {
+    for (let depth = 1; depth <= segments.length; depth++) {
+      const candidate = segments.slice(-depth).join("/");
+      const unique = parts.every(
+        (other, otherIndex) =>
+          otherIndex === index || other.slice(-depth).join("/") !== candidate,
+      );
+      if (unique) return candidate;
+    }
+    return segments.join("/");
+  });
+}
