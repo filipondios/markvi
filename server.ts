@@ -61,6 +61,10 @@ function startServer() {
       port,
       // El flujo SSE queda abierto: debe durar más que el latido (25 s).
       idleTimeout: 60,
+      // Sin `development` Bun sirve el bundle sin minificar, con sourcemaps y un socket
+      // HMR (y su overlay de «Runtime error»). Por defecto, bundle de producción.
+      // `MARKVI_DEV=1 bun run start` recupera el modo desarrollo.
+      development: Bun.env.MARKVI_DEV === "1",
       routes: {
         "/": index,
         "/view/*": index,
