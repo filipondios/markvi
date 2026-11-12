@@ -1,4 +1,8 @@
-**MarkVi** es un visor y editor local de Markdown para tu navegador de confianza, ejecutado con [Bun](https://bun.com/).
+<p align="center">
+  <img src="./public/img/logo-full.png" alt="opios" width="150">
+</p>
+
+<p align="center"><em>Un visor y editor local de Markdown para tu navegador, ejecutado con <a href="https://bun.com">Bun</a>.</em></p>
 
 ## Uso
 
