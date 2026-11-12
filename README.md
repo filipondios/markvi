@@ -10,6 +10,7 @@
 bun install
 bun run server.ts ./example        # http://127.0.0.1:3000
 bun run server.ts ~/notes -p 4000  # another directory and port
+bun run server.ts ~/notes -c my.toml  # another configuration file
 ```
 
 The app only listens on `127.0.0.1`. The directory is scanned for `.md` files, ignoring hidden files and other irrelevant entries.
@@ -42,10 +43,6 @@ In the rendered view:
 | `space` + `x`       | Close the active tab             |
 
 Counts work just like in Vim: `5j`, `3]]`, `2gt`, `10G`. The pending key is displayed in the bottom status bar. Pressing `space` and waiting about 300 ms opens a panel showing the available continuations.
-
-## Tasks
-
-Checkboxes (`- [ ]` / `- [x]`) in the rendered view are interactive: click one, or press `x` to toggle the task at the cursor. The change is written to the file right away, using the tab's `ETag`, so a file that changed on disk is never overwritten. If the tab has unsaved changes, the task is only updated in the draft (`:w` saves it). The status bar shows how many tasks are done, for example `12/20`.
 
 ## Files
 
@@ -87,6 +84,38 @@ Exiting the editor always returns to the rendered view of the same tab: `:q` nev
 With line wrapping enabled, `j` / `k` move by screen lines in Normal and Visual modes. When used with an operator (`dj`, `yk`), they operate on logical file lines instead. `gt` / `gT` also switch tabs from Normal mode. The default register is internal to the editor, not the system clipboard.
 
 The browser reserves `Ctrl+W`, `Ctrl+T`, and `Ctrl+N` for its own actions (close tab, open tab, and new window), so these shortcuts cannot be used as they would be in Vim.
+
+## Configuration
+
+MarkVi reads `~/.config/markvi/config.toml` (`$XDG_CONFIG_HOME/markvi/config.toml` if set). Use `--config <file>` or the `MARKVI_CONFIG` variable for another location. A commented example with every option is in [`example/config.toml`](./example/config.toml). Everything is optional, and the file is read on every page load: reload the browser to apply changes. `:config` shows which file is in use.
+
+```toml
+leader = ","            # "space" (default) or a single symbol
+theme = "dark"          # "auto" (default), "light" or "dark"
+font = "JetBrains Mono" # monospace font; Obel Mono is the fallback
+
+[editor]
+number = true
+relativenumber = true
+scrolloff = 5
+
+[keymap.leader]         # keys after the leader
+f = "none"              # remove a shortcut
+ff = "find"             # sequences of up to 4 keys
+n = ":e diary.md"       # an action starting with ":" runs that command
+"/" = "grep"            # find, grep, recent, alternate, toc, close
+
+[keymap.view]           # rendered view: one key acts as another
+J = "j"
+
+[keymap.normal]         # editor mappings, like :nmap / :imap / :vmap
+H = "^"
+
+[keymap.insert]
+jk = "<Esc>"
+```
+
+Invalid values never stop the app: they are ignored, the first problem is shown in the status bar and all of them are printed to the browser console and the server log. A shortcut cannot start with another bound sequence (`ff` while `f` is bound): unbind `f` first. In the editor's Normal mode the leader key replaces its Vim meaning (with `,` you lose "repeat `f` / `t` backwards").
 
 ## Live Reload and Conflicts
 
