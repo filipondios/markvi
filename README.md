@@ -40,6 +40,7 @@ In the rendered view:
 | `space` + `r`       | Recent files                     |
 | `space` + `a`       | Alternate file (same as `Ctrl-^`)|
 | `space` + `t`       | Document table of contents (TOC) |
+| `space` + `b`       | Backlinks to the current file    |
 | `space` + `x`       | Close the active tab             |
 
 Counts work just like in Vim: `5j`, `3]]`, `2gt`, `10G`. The pending key is displayed in the bottom status bar. Pressing `space` and waiting about 300 ms opens a panel showing the available continuations.
@@ -60,6 +61,24 @@ New files get a `.md` extension and are created inside the directory (never outs
 ## Document Table of Contents
 
 `space` + `t` opens the document heading index, featuring fuzzy search and a section preview. Pressing `Enter` scrolls the view to the selected heading; in the editor, it moves the cursor to that heading's line. It works both in the rendered view and in the editor's Normal mode.
+
+## Wiki Links and Backlinks
+
+`[[Note]]` links to another file by name, without the `.md` extension and ignoring case. The rendered view shows it as a dotted link that opens like any other internal link (`f` follows it with hints too).
+
+| Syntax                | Target                                                            |
+| --------------------- | ----------------------------------------------------------------- |
+| `[[Note]]`            | The file `Note.md`, anywhere under the directory                  |
+| `[[folder/Note]]`     | A path suffix, to tell apart files with the same name             |
+| `[[Note#Heading]]`    | A section of that file                                            |
+| `[[#Heading]]`        | A section of the current document                                 |
+| `[[Note\|text]]`      | Shows `text` instead of the name                                  |
+
+If several files share a name, the one in the same folder as the current file wins, then the least deeply nested one. A path starting with `/` is exact from the root, and `./` and `../` are exact relative to the current file. Links inside code blocks and inline code are left alone, and `\[[` escapes one.
+
+A link to a file that does not exist is shown in red with a dashed underline. Clicking it asks for confirmation and creates the file next to the current one (or at the given path if it has folders). Links update on their own when files are created, renamed or deleted.
+
+`space` + `b` lists the backlinks of the current file: every line of other files that links to it, either with `[[wiki]]` or with a regular relative link such as `[text](../note.md)`. It supports filtering, previews the source file with the line highlighted and `Enter` opens it there. Renaming a file with `:mv` does not rewrite links that point to it.
 
 ## Vim Editor
 
@@ -103,7 +122,7 @@ scrolloff = 5
 f = "none"              # remove a shortcut
 ff = "find"             # sequences of up to 4 keys
 n = ":e diary.md"       # an action starting with ":" runs that command
-"/" = "grep"            # find, grep, recent, alternate, toc, close
+"/" = "grep"            # find, grep, recent, alternate, toc, backlinks, close
 
 [keymap.view]           # rendered view: one key acts as another
 J = "j"
