@@ -2,104 +2,88 @@
   <img src="./public/img/logo-full.png" alt="opios" width="150">
 </p>
 
-<p align="center"><em>Un visor y editor local de Markdown para tu navegador con atajos estilo <a href="https://github.com/vim/vim">Vim</a>.</em></p>
+<p align="center"><em>A local Markdown viewer and editor for your browser with Vim-style keybindings.</em></p>
 
-## Uso
+## Usage
 
-```sh
+```
 bun install
 bun run server.ts ./example        # http://127.0.0.1:3000
-bun run server.ts ~/notas -p 4000  # otro directorio y puerto
+bun run server.ts ~/notes -p 4000  # another directory and port
 ```
 
-La app escucha solo en `127.0.0.1`. El directorio se explora en busca de archivos `.md`, ignorando archivos ocultos y otros no relevantes.
+The app only listens on `127.0.0.1`. The directory is scanned for `.md` files, ignoring hidden files and other irrelevant entries.
 
-## Atajos
+## Keybindings
 
-En la vista renderizada:
+In the rendered view:
 
-| Tecla | Acción |
-| --- | --- |
-| `j` / `k` | Bloque siguiente / anterior |
-| `Ctrl-d` / `Ctrl-u` | Media página abajo / arriba |
-| `gg` / `G` | Inicio / final del documento |
-| `]]` / `[[` | Encabezado siguiente / anterior |
-| `/` / `?` | Buscar en el documento |
-| `n` / `N` | Coincidencia siguiente / anterior |
-| `f` | Seguir un enlace con pistas |
-| `gt` / `gT` | Pestaña siguiente / anterior |
-| `{n}gt` | Ir a la pestaña n |
-| `Ctrl-o` / `Ctrl-i` | Atrás / adelante en el historial |
-| `:` | Comando (`:e`, `:q`, `:w`) |
-| `a` / `i` | Entrar al editor en modo Normal |
-| `espacio` + `f` | Buscar archivos |
-| `espacio` + `t` | Índice del documento (TOC) |
-| `espacio` + `x` | Cerrar la pestaña activa |
+| Key                 | Action                           |
+| ------------------- | -------------------------------- |
+| `j` / `k`           | Next / previous block            |
+| `Ctrl-d` / `Ctrl-u` | Half-page down / up              |
+| `gg` / `G`          | Beginning / end of document      |
+| `]]` / `[[`         | Next / previous heading          |
+| `/` / `?`           | Search within the document       |
+| `n` / `N`           | Next / previous match            |
+| `f`                 | Follow a link using hints        |
+| `gt` / `gT`         | Next / previous tab              |
+| `{n}gt`             | Go to tab n                      |
+| `Ctrl-o` / `Ctrl-i` | Back / forward in history        |
+| `:`                 | Command (`:e`, `:q`, `:w`)       |
+| `a` / `i`           | Enter the editor in Normal mode  |
+| `space` + `f`       | Search files                     |
+| `space` + `t`       | Document table of contents (TOC) |
+| `space` + `x`       | Close the active tab             |
 
-Los contadores funcionan como en Vim: `5j`, `3]]`, `2gt`, `10G`. La tecla
-pendiente se muestra en la barra inferior. Al pulsar `espacio` y esperar unos
-300 ms aparece un panel con las continuaciones disponibles.
+Counts work just like in Vim: `5j`, `3]]`, `2gt`, `10G`. The pending key is displayed in the bottom status bar. Pressing `space` and waiting about 300 ms opens a panel showing the available continuations.
 
-## Índice del documento
+## Document Table of Contents
 
-`espacio` + `t` abre el índice de encabezados del documento con búsqueda difusa
-y preview de la sección. `Enter` desplaza la vista hasta el encabezado; en el
-editor, mueve el cursor a su línea. Funciona desde la vista y desde modo Normal
-del editor.
+`space` + `t` opens the document heading index, featuring fuzzy search and a section preview. Pressing `Enter` scrolls the view to the selected heading; in the editor, it moves the cursor to that heading's line. It works both in the rendered view and in the editor's Normal mode.
 
-## Editor Vim
+## Vim Editor
 
-El editor arranca en modo Normal. Se escribe pulsando otra vez `a` / `i` (o
-`o`, `O`, etc.) ya dentro, como en Vim. `Esc` solo vuelve a Normal.
+The editor starts in Normal mode. To type, press `a` / `i` again (or `o`, `O`, etc.) once inside the editor, just like in Vim. `Esc` only returns to Normal mode.
 
-`a` / `i` abren el editor en la línea que se está leyendo (o en el texto
-seleccionado, si hay una selección). Un doble clic en un bloque abre el editor
-en la línea de ese punto. Al salir, la vista vuelve al bloque de esa línea.
-Guardar es solo con comandos ex: `:w`, `:wq`, `:x` o `ZZ`.
+`a` / `i` open the editor at the line currently being viewed (or at the selected text, if there is a selection). Double-clicking a block opens the editor at that block's corresponding line. When you exit, the view returns to the block at that line.
 
-| Comando | Acción |
-| --- | --- |
-| `:w` | Guardar sin salir |
-| `:wq`, `:x`, `ZZ` | Guardar y volver a la vista |
-| `:q` | Volver a la vista si no hay cambios; si los hay, avisa y no sale |
-| `:q!`, `ZQ` | Descartar los cambios y volver a la vista |
-| `:set nu` / `:set nonu` | Números de línea absolutos (activos por defecto) |
-| `:set rnu` / `:set nornu` | Números de línea relativos (desactivados por defecto) |
-| `:set so=N` | Margen de líneas visibles alrededor del cursor (por defecto `0`) |
+Saving is only available through ex commands: `:w`, `:wq`, `:x`, or `ZZ`.
 
-Salir del editor siempre vuelve a la vista renderizada de la misma pestaña:
-`:q` nunca cierra la pestaña. Para cerrarla se usa `espacio` + `x`.
+| Command                   | Action                                                                                                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `:w`                      | Save without exiting                                                                                  |
+| `:wq`, `:x`, `ZZ`         | Save and return to the rendered view                                                                  |
+| `:q`                      | Return to the rendered view if there are no changes; otherwise, show a warning and stay in the editor |
+| `:q!`, `ZQ`               | Discard changes and return to the rendered view                                                       |
+| `:set nu` / `:set nonu`   | Absolute line numbers (enabled by default)                                                            |
+| `:set rnu` / `:set nornu` | Relative line numbers (disabled by default)                                                           |
+| `:set so=N`               | Number of visible lines around the cursor (default: `0`)                                              |
 
-Con el ajuste de línea activo, `j` / `k` avanzan por líneas de pantalla en
-Normal y Visual. Con un operador (`dj`, `yk`) siguen contando líneas lógicas
-del archivo. `gt` / `gT` cambian de pestaña también desde modo Normal. El
-registro por defecto es interno del editor, no el portapapeles del sistema.
+Exiting the editor always returns to the rendered view of the same tab: `:q` never closes a tab. To close a tab, use `space` + `x`.
 
-El navegador se queda con `Ctrl+W`, `Ctrl+T` y `Ctrl+N` (cerrar pestaña, abrir
-pestaña y ventana nueva), así que no se pueden usar como en Vim.
+With line wrapping enabled, `j` / `k` move by screen lines in Normal and Visual modes. When used with an operator (`dj`, `yk`), they operate on logical file lines instead. `gt` / `gT` also switch tabs from Normal mode. The default register is internal to the editor, not the system clipboard.
 
-## Recarga y conflictos
+The browser reserves `Ctrl+W`, `Ctrl+T`, and `Ctrl+N` for its own actions (close tab, open tab, and new window), so these shortcuts cannot be used as they would be in Vim.
 
-El servidor vigila el directorio con `fs.watch` y avisa por SSE. Si un archivo
-cambia en disco y no hay cambios locales, la pestaña se recarga sola. Si hay un
-borrador sin guardar, la barra inferior muestra el conflicto con acciones para
-recargar o sobrescribir. Los guardados usan `ETag`/`If-Match`: si el archivo
-cambió entre la lectura y el guardado, el servidor responde `409` en vez de
-pisar los cambios ajenos.
+## Live Reload and Conflicts
 
-## Compilar como comando
+The server watches the directory using `fs.watch` and sends notifications over SSE. If a file changes on disk and there are no local edits, the tab reloads automatically. If there is an unsaved draft, the bottom status bar displays a conflict notification with options to reload or overwrite the file.
 
-```sh
-bun run build # generando dist/markvi
+Saves use `ETag`/`If-Match`: if the file changes between reading and saving, the server responds with `409` instead of overwriting someone else's changes.
+
+## Build as a Command-Line Tool
+
+```
+bun run build # generates dist/markvi
 install -m 755 dist/markvi ~/.local/bin/markvi
-markvi ~/notas # cambia notas por tu directorio
+markvi ~/notes # replace notes with your directory
 ```
 
-El binario incluye el frontend y no necesita `bun` instalado para ejecutarse.
+The binary bundles the frontend and does not require `bun` to be installed at runtime.
 
-## Licencias
+## Licenses
 
-La interfaz usa **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors,
-autor Cody Collier), autoalojada en `public/fonts/` bajo la SIL Open Font
-License 1.1. El texto completo está en `public/fonts/OFL.txt` y los autores en
-`public/fonts/AUTHORS.txt`. El zip original no se versiona.
+This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for the full license text.
+
+The interface uses **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors, authored by Cody Collier), self-hosted in `public/fonts/` under the [SIL Open Font License 1.1](public/fonts/OFL,txt). The full license text is available in `public/fonts/OFL.txt`, and the authors are listed in `public/fonts/AUTHORS.txt`.
