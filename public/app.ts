@@ -491,7 +491,7 @@ function currentHeadingLine() {
 function moveHeading(direction: 1 | -1, count: number) {
   const headings = headingElements();
   if (headings.length === 0) {
-    notify("El documento no tiene encabezados", "warn", 2000);
+    notify("The document has no headings", "warn", 2000);
     return;
   }
 
@@ -589,7 +589,7 @@ function searchDocument(query: string, direction: 1 | -1) {
   }
 
   if (matches.length === 0) {
-    notify(`Sin coincidencias: ${query}`, "warn", 2500);
+    notify(`No matches: ${query}`, "warn", 2500);
     return;
   }
 
@@ -613,7 +613,7 @@ function searchDocument(query: string, direction: 1 | -1) {
   paintSearch();
   scrollToMatch(matches[index]!);
   notify(
-    `${matches.length} coincidencia${matches.length === 1 ? "" : "s"}: ${query}`,
+    `${matches.length} match${matches.length === 1 ? "" : "es"}: ${query}`,
     "ok",
     2500,
   );
@@ -621,7 +621,7 @@ function searchDocument(query: string, direction: 1 | -1) {
 
 function nextMatch(direction: 1 | -1, count: number) {
   if (!searchState) {
-    notify("Sin búsqueda activa", "warn", 2000);
+    notify("No active search", "warn", 2000);
     return;
   }
   const total = searchState.matches.length;
@@ -643,7 +643,7 @@ function openHints() {
   );
 
   if (links.length === 0) {
-    notify("No hay enlaces visibles", "warn", 2000);
+    notify("No visible links", "warn", 2000);
     return;
   }
 
@@ -714,7 +714,7 @@ function openPrompt(mode: "search" | "ex", direction: 1 | -1 = 1) {
   promptPrefix.textContent = mode === "search" ? (direction > 0 ? "/" : "?") : ":";
   promptInput.value = "";
   promptInput.placeholder =
-    mode === "search" ? "Buscar en el documento…" : ":e archivo · :q · :w";
+    mode === "search" ? "Search in document…" : ":e file · :q · :w";
   promptBar.hidden = false;
   promptInput.focus();
 }
@@ -749,7 +749,7 @@ function normalizePath(input: string) {
 async function openPath(input: string) {
   const path = normalizePath(input);
   if (!path) {
-    notify("Falta el nombre del archivo", "warn", 2500);
+    notify("Missing file name", "warn", 2500);
     return;
   }
 
@@ -778,7 +778,7 @@ async function openPath(input: string) {
     return;
   }
 
-  notify(`No se encontró ${path}`, "error", 3000);
+  notify(`Not found: ${path}`, "error", 3000);
 }
 
 async function runEx(input: string) {
@@ -805,7 +805,7 @@ async function runEx(input: string) {
     case "write":
       if (!active) return;
       if (!active.dirty) {
-        notify("Sin cambios que guardar", "ok", 2000);
+        notify("No changes to save", "ok", 2000);
         return;
       }
       await saveDraft(active);
@@ -817,7 +817,7 @@ async function runEx(input: string) {
       closeTab(active, { force: true });
       return;
     default:
-      notify(`Comando desconocido: ${command}`, "error", 3000);
+      notify(`Unknown command: ${command}`, "error", 3000);
   }
 }
 
@@ -1009,23 +1009,23 @@ function notify(message: string, tone: StatusTone = "ok", timeout = 4000) {
 function statusActionsFor(tab: Tab): StatusAction[] {
   if (tab.conflict === "changed") {
     return [
-      { label: "Recargar", run: () => void reloadTab(tab, { discard: true }) },
-      { label: "Sobrescribir", run: () => void saveDraft(tab, { force: true }) },
+      { label: "Reload", run: () => void reloadTab(tab, { discard: true }) },
+      { label: "Overwrite", run: () => void saveDraft(tab, { force: true }) },
     ];
   }
   if (tab.conflict === "deleted") {
     const actions: StatusAction[] = [
-      { label: "Recrear archivo", run: () => void recreateTab(tab) },
+      { label: "Recreate file", run: () => void recreateTab(tab) },
     ];
     actions.push(
       tab.dirty
-        ? { label: "Descartar cambios", run: () => discardChanges(tab) }
-        : { label: "Cerrar pestaña", run: () => closeTab(tab) },
+        ? { label: "Discard changes", run: () => discardChanges(tab) }
+        : { label: "Close tab", run: () => closeTab(tab) },
     );
     return actions;
   }
   if (tab.error) {
-    return [{ label: "Reintentar", run: () => void showTab(tab) }];
+    return [{ label: "Retry", run: () => void showTab(tab) }];
   }
   return [];
 }
@@ -1103,36 +1103,36 @@ function paintVimStatus() {
 function renderStatus() {
   const tab = active;
   const mode = editor ? editor.vimStatus().mode : tab ? "view" : "index";
-  setText(statusMode, editor ? vimModeLabel(mode) : tab ? "Vista" : "Índice");
+  setText(statusMode, editor ? vimModeLabel(mode) : tab ? "View" : "Index");
   if (statusMode.dataset.mode !== mode) statusMode.dataset.mode = mode;
   setText(statusVim, editor ? vimStatusText(editor.vimStatus()) : viewNav.pending);
   setText(statusPath, tab ? tab.path : "");
   statusDirty.hidden = !tab?.dirty;
 
-  let state = "Listo";
+  let state = "Ready";
   let tone: StatusTone = "ok";
   let message = "";
 
   if (loading) {
-    state = "Cargando";
+    state = "Loading";
   } else if (tab) {
     if (tab.conflict === "changed") {
-      state = "Conflicto";
+      state = "Conflict";
       tone = "warn";
-      message = "El archivo cambió en disco.";
+      message = "The file changed on disk.";
     } else if (tab.conflict === "deleted") {
-      state = "Archivo borrado";
+      state = "File deleted";
       tone = "error";
-      message = "El archivo ya no existe.";
+      message = "The file no longer exists.";
     } else if (tab.error) {
       state = "Error";
       tone = "error";
       message = tab.error;
     } else if (tab.dirty) {
-      state = "Sin guardar";
+      state = "Unsaved";
       tone = "warn";
     } else {
-      state = "Guardado";
+      state = "Saved";
     }
   }
 
@@ -1181,8 +1181,8 @@ function renderTabs() {
     close.className = "tab-close";
     close.type = "button";
     close.textContent = "×";
-    close.title = `Cerrar ${tab.path}`;
-    close.setAttribute("aria-label", `Cerrar ${tab.path}`);
+    close.title = `Close ${tab.path}`;
+    close.setAttribute("aria-label", `Close ${tab.path}`);
     close.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1334,7 +1334,7 @@ async function writeDraft(tab: Tab, options: { force?: boolean } = {}) {
     updateChrome();
     syncTabState();
     persistTabs();
-    if (tab === active) notify("Guardado en disco", "ok", 2500);
+    if (tab === active) notify("Saved to disk", "ok", 2500);
     return true;
   } catch (error) {
     if (tab.raw !== savedRaw || tab.etag !== savedEtag) {
@@ -1382,7 +1382,7 @@ async function recreateTab(tab: Tab) {
     }
 
     persistTabs();
-    notify("Archivo recreado", "ok", 2500);
+    notify("File recreated", "ok", 2500);
     return true;
   } catch (error) {
     handleSaveError(tab, error);
@@ -1396,15 +1396,15 @@ function handleSaveError(tab: Tab, error: unknown) {
 
   if (status === 409) {
     tab.conflict = "changed";
-    notify("El archivo cambió en disco: recarga o sobrescribe.", "warn", 0);
+    notify("The file changed on disk: reload or overwrite.", "warn", 0);
   } else if (status === 404) {
     tab.conflict = "deleted";
     tab.etag = undefined;
-    notify("El archivo ya no existe: puedes recrearlo con tus cambios.", "error", 0);
+    notify("The file no longer exists: you can recreate it with your changes.", "error", 0);
   } else if (status === 403) {
     notify(message, "error", 0);
   } else {
-    notify(`No se pudo guardar: ${message}`, "error", 0);
+    notify(`Could not save: ${message}`, "error", 0);
   }
 
   if (tab === active) editor?.view.focus();
@@ -1445,7 +1445,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
       } else {
         tab.conflict = "changed";
         if (tab === active) {
-          notify("El archivo cambió en disco. Tienes cambios sin guardar.", "warn", 0);
+          notify("The file changed on disk. You have unsaved changes.", "warn", 0);
           updateChrome();
         }
         syncTabState();
@@ -1486,7 +1486,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
 
     persistTabs();
     notify(
-      options.discard ? "Cambios descartados y archivo recargado" : "Recargado desde disco",
+      options.discard ? "Changes discarded and file reloaded" : "Reloaded from disk",
       "ok",
       2500,
     );
@@ -1500,23 +1500,23 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
       tab.conflict = "deleted";
       if (!tab.dirty) {
         tab.loaded = false;
-        tab.error = "Archivo no encontrado.";
+        tab.error = "File not found.";
         if (tab === active && !editor) {
           clearSearch();
           content.replaceChildren(
             renderErrorState(
-              "No se pudo recargar el archivo",
+              "Could not reload the file",
               tab.error,
-              "Reintentar",
+              "Retry",
               () => void reloadTab(tab, { discard: true }),
             ),
           );
           editable = false;
         }
       }
-      if (tab === active) notify("El archivo se borró en disco.", "error", 0);
+      if (tab === active) notify("The file was deleted on disk.", "error", 0);
     } else if (tab === active) {
-      notify(`No se pudo recargar: ${message}`, "error", 0);
+      notify(`Could not reload: ${message}`, "error", 0);
     }
 
     if (tab === active) loading = false;
@@ -1538,7 +1538,7 @@ function discardChanges(tab: Tab) {
   if (wasDeleted) {
     tab.loaded = false;
     tab.etag = undefined;
-    tab.error = "Archivo no encontrado.";
+    tab.error = "File not found.";
   }
 
   if (tab === active) {
@@ -1555,7 +1555,7 @@ function discardChanges(tab: Tab) {
   }
 
   persistTabs();
-  notify("Cambios descartados", "ok", 2500);
+  notify("Changes discarded", "ok", 2500);
 }
 
 async function exitEditor(tab: Tab, options: EditorExitOptions = {}) {
@@ -1573,7 +1573,7 @@ async function exitEditor(tab: Tab, options: EditorExitOptions = {}) {
     const hadChanges = tab.dirty;
     tab.draft = tab.raw;
     tab.dirty = false;
-    if (hadChanges) notify("Cambios descartados", "ok", 2500);
+    if (hadChanges) notify("Changes discarded", "ok", 2500);
     if (tab.conflict) {
       persistTabs();
       await reloadTab(tab, { discard: true });
@@ -1607,20 +1607,20 @@ function renderErrorState(
 function buildIndex(files: string[]) {
   const wrapper = element("div", "", "index");
   const header = element("div", "", "index-header");
-  header.append(element("h1", "Archivos"));
+  header.append(element("h1", "Files"));
   header.append(
-    element("p", "espacio + f buscar · espacio + t índice · Enter abrir", "index-hint"),
+    element("p", "space + f find · space + t index · Enter open", "index-hint"),
   );
   wrapper.append(header);
 
   if (files.length === 0) {
-    wrapper.append(element("p", "No hay archivos .md en este directorio.", "index-empty"));
+    wrapper.append(element("p", "No .md files in this directory.", "index-empty"));
     return wrapper;
   }
 
   if (tabs.length > 0) {
     const section = element("section", "", "index-group");
-    section.append(element("h2", "Recientes"));
+    section.append(element("h2", "Recent"));
     const list = element("ul", "", "files");
     for (const tab of tabs) {
       const link = element("a", tab.path);
@@ -1644,7 +1644,7 @@ function buildIndex(files: string[]) {
 
   for (const [dir, group] of groups) {
     const section = element("section", "", "index-group");
-    section.append(element("h2", dir || "Raíz"));
+    section.append(element("h2", dir || "Root"));
     const list = element("ul", "", "files");
     for (const file of group) {
       const name = dir ? file.slice(dir.length + 1) : file;
@@ -1726,9 +1726,9 @@ async function showIndex() {
     nodes = buildIndex(files);
   } catch (error) {
     nodes = renderErrorState(
-      "No se pudo cargar el índice",
+      "Could not load the index",
       error instanceof Error ? error.message : String(error),
-      "Reintentar",
+      "Retry",
       () => void showIndex(),
     );
   }
@@ -1784,9 +1784,9 @@ async function showTab(tab: Tab, scroll?: number) {
     clearSearch();
     content.replaceChildren(
       renderErrorState(
-        "No se pudo abrir el archivo",
+        "Could not open the file",
         tab.error,
-        "Reintentar",
+        "Retry",
         () => void showTab(tab),
       ),
     );
@@ -1858,7 +1858,7 @@ function openInCurrentTab(path: string, url: URL | string = viewUrl(path)) {
   }
   if (
     active.dirty &&
-    !confirm("Hay cambios sin guardar. ¿Descartarlos y abrir el archivo en esta pestaña?")
+    !confirm("You have unsaved changes. Discard them and open the file in this tab?")
   ) {
     editor?.view.focus();
     return;
@@ -1889,7 +1889,7 @@ function closeTab(tab: Tab, options: { force?: boolean } = {}) {
   if (
     tab.dirty &&
     !options.force &&
-    !confirm(`"${tab.path}" tiene cambios sin guardar. ¿Cerrar la pestaña y descartarlos?`)
+    !confirm(`"${tab.path}" has unsaved changes. Close the tab and discard them?`)
   ) {
     if (wasActive) editor?.view.focus();
     return;
@@ -1989,7 +1989,7 @@ async function refreshIndex() {
     scrollTo(0, scroll);
     invalidateBlocks();
     updateReadingIndicator();
-    notify("Índice actualizado", "ok", 2000);
+    notify("Index updated", "ok", 2000);
   } catch {
     // Si el árbol falla se mantiene el índice anterior.
   }
@@ -2023,8 +2023,8 @@ async function handleDiskChange(event: DiskEvent) {
       if (tab === active) {
         notify(
           type === "delete"
-            ? "El archivo se borró en disco. Tienes cambios sin guardar."
-            : "El archivo cambió en disco. Tienes cambios sin guardar.",
+            ? "The file was deleted on disk. You have unsaved changes."
+            : "The file changed on disk. You have unsaved changes.",
           "warn",
           0,
         );
@@ -2074,11 +2074,11 @@ const finder = createFinder({
 });
 
 const toc = createSelector<Heading>({
-  title: "Índice del documento",
-  placeholder: "Ir a encabezado…",
-  listLabel: "Encabezados",
-  hint: "↑↓ o Ctrl+j/k mover · Enter ir · Esc cerrar",
-  empty: (query) => (query ? "Sin resultados." : "El documento no tiene encabezados."),
+  title: "Table of contents",
+  placeholder: "Go to heading…",
+  listLabel: "Headings",
+  hint: "↑↓ or Ctrl+j/k move · Enter go · Esc close",
+  empty: (query) => (query ? "No results." : "The document has no headings."),
   items() {
     if (!active) return [];
     const source = editor ? editor.view.state.doc.toString() : active.draft;
@@ -2194,17 +2194,17 @@ function scheduleWhichKey() {
 
 const leader = createLeader(
   [
-    { keys: ["f"], label: "Buscar archivo", run: () => finder.open() },
+    { keys: ["f"], label: "Find file", run: () => finder.open() },
     {
       keys: ["t"],
-      label: "Índice del documento",
+      label: "Table of contents",
       run: () => {
         if (active) toc.open();
       },
     },
     {
       keys: ["x"],
-      label: "Cerrar pestaña",
+      label: "Close tab",
       run: () => {
         if (active) closeTab(active);
       },

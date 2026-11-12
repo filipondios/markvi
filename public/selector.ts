@@ -231,7 +231,7 @@ export function createSelector<T>(options: SelectorOptions<T>): Selector {
 
     let cached = previewCache.get(item.key);
     if (cached === undefined) {
-      previewBody.replaceChildren(element("p", "muted", "Cargando…"));
+      previewBody.replaceChildren(element("p", "muted", "Loading…"));
       try {
         cached = await options.preview(item);
         previewCache.set(item.key, cached);
@@ -270,7 +270,7 @@ export function createSelector<T>(options: SelectorOptions<T>): Selector {
     input.value = "";
     count.textContent = "";
     previewTitle.textContent = "";
-    previewBody.replaceChildren(element("p", "muted", "Cargando…"));
+    previewBody.replaceChildren(element("p", "muted", "Loading…"));
     list.replaceChildren();
     input.removeAttribute("aria-activedescendant");
     backdrop.hidden = false;

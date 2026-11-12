@@ -106,7 +106,7 @@ Vim.defineEx("quit", "q", (_cm, params) => {
     return;
   }
   if (active.hasChanges()) {
-    active.message("No se guardó desde el último cambio, añade ! para forzar");
+    active.message("No write since last change, add ! to override");
     return;
   }
   exitSoon();

@@ -84,7 +84,7 @@ test("sirve estáticos dentro del raíz con sandbox y valida Host", async () => 
 
   const forbidden = await fetch(`${origin}/api/tree`, { headers: { Host: "evil.example" } });
   expect(forbidden.status).toBe(403);
-  expect(await forbidden.json()).toEqual({ error: "Host no permitido." });
+  expect(await forbidden.json()).toEqual({ error: "Host not allowed." });
 });
 
 test("GET devuelve ETag y PUT detecta conflictos con If-Match", async () => {
@@ -109,7 +109,7 @@ test("GET devuelve ETag y PUT detecta conflictos con If-Match", async () => {
     body: "# local\n",
   });
   expect(conflict.status).toBe(409);
-  expect(((await conflict.json()) as { error: string }).error).toContain("cambió");
+  expect(((await conflict.json()) as { error: string }).error).toContain("changed");
   expect(await Bun.file(join(root, "note.md")).text()).toBe("# externo\n");
 
   // Sin If-Match se sobrescribe: es lo que hace el botón «Sobrescribir».

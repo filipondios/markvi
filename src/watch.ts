@@ -60,9 +60,9 @@ export function createFileWatcher(root: string): FileWatcher {
       if (!filename) return;
       schedule(filename.toString().split(sep).join("/"));
     });
-    watcher.on("error", (error) => console.error("Vigilancia de archivos:", error));
+    watcher.on("error", (error) => console.error("File watcher:", error));
   } catch (error) {
-    console.error("No se pudo vigilar el directorio:", error);
+    console.error("Could not watch the directory:", error);
   }
 
   return {

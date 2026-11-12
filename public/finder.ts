@@ -14,11 +14,11 @@ export type Finder = Selector;
 
 export function createFinder(options: FinderOptions): Finder {
   return createSelector<string>({
-    title: "Buscar archivo",
-    placeholder: "Buscar archivo…",
-    listLabel: "Archivos",
-    hint: "↑↓ o Ctrl+j/k mover · Enter abrir · Esc cerrar",
-    empty: (query) => (query ? "Sin resultados." : "No hay archivos .md."),
+    title: "Find file",
+    placeholder: "Find file…",
+    listLabel: "Files",
+    hint: "↑↓ or Ctrl+j/k move · Enter open · Esc close",
+    empty: (query) => (query ? "No results." : "No .md files."),
     async items() {
       return (await options.list()).map((path) => ({
         key: path,

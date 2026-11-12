@@ -28,7 +28,7 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
   const guard = (handler: Handler): Handler => async (req) => {
     try {
       if (!hosts.has(req.headers.get("host") ?? "")) {
-        throw new HttpError(403, "Host no permitido.");
+        throw new HttpError(403, "Host not allowed.");
       }
       return await handler(req);
     } catch (error) {
@@ -39,13 +39,13 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
       const code = (error as NodeJS.ErrnoException).code;
       const mapped: [number, string] | null =
         code === "ENOENT" || code === "ENOTDIR"
-          ? [404, "Archivo o carpeta no encontrado."]
+          ? [404, "File or folder not found."]
           : code === "EACCES" || code === "EPERM" || code === "EROFS"
-            ? [403, "Sin permisos para acceder al archivo."]
+            ? [403, "No permission to access the file."]
             : code === "EISDIR"
-              ? [400, "La ruta no es un archivo."]
+              ? [400, "The path is not a file."]
               : code === "ENOSPC"
-                ? [507, "No hay espacio en el disco."]
+                ? [507, "No space left on disk."]
                 : null;
 
       if (mapped) {
@@ -53,19 +53,19 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
       }
 
       console.error(error);
-      return Response.json({ error: "Error interno." }, { status: 500, headers: NO_STORE });
+      return Response.json({ error: "Internal error." }, { status: 500, headers: NO_STORE });
     }
   };
 
   async function markdownFile(req: Request) {
     const file = await resolveFile(root, new URL(req.url).searchParams.get("path"));
-    if (!isMarkdown(file)) throw new HttpError(400, "Solo se admiten archivos .md.");
+    if (!isMarkdown(file)) throw new HttpError(400, "Only .md files are supported.");
     return file;
   }
 
   async function writableMarkdown(req: Request) {
     const file = await resolveWritable(root, new URL(req.url).searchParams.get("path"));
-    if (!isMarkdown(file)) throw new HttpError(400, "Solo se admiten archivos .md.");
+    if (!isMarkdown(file)) throw new HttpError(400, "Only .md files are supported.");
     return file;
   }
 
@@ -73,7 +73,7 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
     try {
       return decodeURIComponent(new URL(req.url).pathname.slice(FILES_PREFIX.length));
     } catch {
-      throw new HttpError(400, "Falta la ruta o no es válida.");
+      throw new HttpError(400, "Missing or invalid path.");
     }
   }
 
@@ -155,11 +155,11 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
               if (error.code === "ENOENT") return null;
               throw error;
             });
-          if (current === null) throw new HttpError(404, "Archivo no encontrado.");
+          if (current === null) throw new HttpError(404, "File not found.");
           const etag = etagFor(current);
           if (ifMatch !== "*" && ifMatch !== etag) {
             return Response.json(
-              { error: "El archivo cambió en disco.", etag },
+              { error: "The file changed on disk.", etag },
               { status: 409, headers: NO_STORE },
             );
           }

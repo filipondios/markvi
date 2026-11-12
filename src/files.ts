@@ -46,23 +46,23 @@ function segmentsInside(root: string, target: string): string[] | null {
 // `root` debe ser una ruta real (sin enlaces simbólicos). Se comprueba la ruta
 // pedida y también la real, para que un enlace simbólico no pueda salir del raíz.
 export async function resolveFile(root: string, path: string | null): Promise<string> {
-  if (!path || path.includes("\0")) throw new HttpError(400, "Falta la ruta o no es válida.");
+  if (!path || path.includes("\0")) throw new HttpError(400, "Missing or invalid path.");
 
   const check = (target: string) => {
     const segments = segmentsInside(root, target);
-    if (!segments) throw new HttpError(403, "Ruta fuera del directorio raíz.");
-    if (segments.some(isIgnored)) throw new HttpError(404, "Archivo no encontrado.");
+    if (!segments) throw new HttpError(403, "Path outside the root directory.");
+    if (segments.some(isIgnored)) throw new HttpError(404, "File not found.");
   };
 
   const target = resolve(root, path);
   check(target);
 
   const real = await realpath(target).catch(() => null);
-  if (!real) throw new HttpError(404, "Archivo no encontrado.");
+  if (!real) throw new HttpError(404, "File not found.");
   check(real);
 
   const info = await stat(real).catch(() => null);
-  if (!info?.isFile()) throw new HttpError(404, "Archivo no encontrado.");
+  if (!info?.isFile()) throw new HttpError(404, "File not found.");
   return real;
 }
 
@@ -70,37 +70,37 @@ export async function resolveFile(root: string, path: string | null): Promise<st
 // recrear un archivo borrado. La carpeta sí debe existir y estar dentro del
 // raíz; si el archivo existe se sigue su ruta real para no escapar por symlinks.
 export async function resolveWritable(root: string, path: string | null): Promise<string> {
-  if (!path || path.includes("\0")) throw new HttpError(400, "Falta la ruta o no es válida.");
+  if (!path || path.includes("\0")) throw new HttpError(400, "Missing or invalid path.");
 
   const check = (target: string) => {
     const segments = segmentsInside(root, target);
-    if (!segments) throw new HttpError(403, "Ruta fuera del directorio raíz.");
-    if (segments.some(isIgnored)) throw new HttpError(404, "Archivo no encontrado.");
+    if (!segments) throw new HttpError(403, "Path outside the root directory.");
+    if (segments.some(isIgnored)) throw new HttpError(404, "File not found.");
   };
 
   const target = resolve(root, path);
   check(target);
 
   const parent = await realpath(dirname(target)).catch(() => null);
-  if (!parent) throw new HttpError(404, "La carpeta del archivo no existe.");
+  if (!parent) throw new HttpError(404, "The file's folder does not exist.");
   if (parent !== root) {
     const parentSegments = segmentsInside(root, parent);
-    if (!parentSegments) throw new HttpError(403, "Ruta fuera del directorio raíz.");
-    if (parentSegments.some(isIgnored)) throw new HttpError(404, "Archivo no encontrado.");
+    if (!parentSegments) throw new HttpError(403, "Path outside the root directory.");
+    if (parentSegments.some(isIgnored)) throw new HttpError(404, "File not found.");
   }
 
   const real = await realpath(target).catch(() => null);
   if (real) {
     check(real);
     const info = await stat(real).catch(() => null);
-    if (!info?.isFile()) throw new HttpError(404, "Archivo no encontrado.");
+    if (!info?.isFile()) throw new HttpError(404, "File not found.");
     return real;
   }
 
   // Si existe pero `realpath` falla es un symlink roto: escribir en él podría
   // crear el destino fuera del raíz.
   if (await lstat(target).catch(() => null)) {
-    throw new HttpError(403, "Ruta fuera del directorio raíz.");
+    throw new HttpError(403, "Path outside the root directory.");
   }
 
   return join(parent, basename(target));
