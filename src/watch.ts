@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { isMarkdown } from "./files.ts";
+import { isIgnored, isMarkdown } from "./files.ts";
 
 export type DiskEventType = "change" | "delete";
 
@@ -38,6 +38,9 @@ export function createFileWatcher(root: string): FileWatcher {
 
   const schedule = (path: string) => {
     if (!isMarkdown(path)) return;
+    // La API nunca sirve estas rutas (.git, node_modules, ocultos): no hay que
+    // hacer stat ni avisar a los clientes por cada README de una dependencia.
+    if (path.split("/").some(isIgnored)) return;
 
     const previous = timers.get(path);
     if (previous) clearTimeout(previous);

@@ -10,29 +10,31 @@ export class HttpError extends Error {
   }
 }
 
-const isIgnored = (name: string) => name.startsWith(".") || name === "node_modules";
+export const isIgnored = (name: string) => name.startsWith(".") || name === "node_modules";
 
 export const isMarkdown = (path: string) => path.toLowerCase().endsWith(".md");
 
 export async function listMarkdown(root: string): Promise<string[]> {
-  const files: string[] = [];
-
-  async function walk(dir: string, prefix: string) {
+  // Mismo orden que antes (archivos de la carpeta y luego subcarpetas por nombre),
+  // pero las subcarpetas se leen en paralelo en vez de una tras otra.
+  async function walk(dir: string, prefix: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     const visible = entries
       .filter((entry) => !isIgnored(entry.name))
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    for (const entry of visible) {
-      if (entry.isFile() && isMarkdown(entry.name)) files.push(prefix + entry.name);
-    }
-    for (const entry of visible) {
-      if (entry.isDirectory()) await walk(join(dir, entry.name), `${prefix}${entry.name}/`);
-    }
+    const files = visible
+      .filter((entry) => entry.isFile() && isMarkdown(entry.name))
+      .map((entry) => prefix + entry.name);
+    const nested = await Promise.all(
+      visible
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => walk(join(dir, entry.name), `${prefix}${entry.name}/`)),
+    );
+    return files.concat(...nested);
   }
 
-  await walk(root, "");
-  return files;
+  return walk(root, "");
 }
 
 function segmentsInside(root: string, target: string): string[] | null {

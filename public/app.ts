@@ -108,6 +108,7 @@ interface HintState {
 }
 
 let blockCache: BlockEntry[] | undefined;
+let navigationCache: BlockEntry[] | undefined;
 let readingElement: HTMLElement | undefined;
 // Bloque marcado a restaurar tras un relayout (imágenes, resize) para que el
 // cursor explícito no salte a la referencia geométrica.
@@ -161,6 +162,7 @@ function invalidateBlocks() {
       ? readingElement
       : undefined;
   blockCache = undefined;
+  navigationCache = undefined;
   readingCursorState.clear();
   if (!readingElement?.isConnected) readingElement = undefined;
 }
@@ -374,13 +376,18 @@ function readingCursor(tab: Tab) {
 
 /** Bloques navegables: se colapsan los que comparten altura (lista y su primer
  * elemento) para que `j`/`k` avancen de verdad. */
+// Se llama en cada evento de scroll y en cada fotograma del indicador: se reutiliza
+// mientras no se invalide el mapa de bloques (antes se reconstruía en O(N) cada vez).
 function navigationBlocks() {
+  const map = blockMap();
+  if (navigationCache) return navigationCache;
   const blocks: BlockEntry[] = [];
-  for (const block of blockMap()) {
+  for (const block of map) {
     const last = blocks[blocks.length - 1];
     if (last && Math.abs(last.top - block.top) < 1) blocks[blocks.length - 1] = block;
     else blocks.push(block);
   }
+  navigationCache = blocks;
   return blocks;
 }
 
@@ -958,9 +965,21 @@ function restoreTabs() {
   }
 }
 
+// Cambiar una variable CSS del <html> invalida el estilo de todo el documento, y
+// esta función corre en cada notificación del ResizeObserver: solo si cambian.
+let barHeight = -1;
+let statusHeight = -1;
 function syncLayoutMetrics() {
-  document.documentElement.style.setProperty("--bar-height", `${bar.offsetHeight}px`);
-  document.documentElement.style.setProperty("--status-height", `${statusBar.offsetHeight}px`);
+  const bh = bar.offsetHeight;
+  const sh = statusBar.offsetHeight;
+  if (bh !== barHeight) {
+    barHeight = bh;
+    document.documentElement.style.setProperty("--bar-height", `${bh}px`);
+  }
+  if (sh !== statusHeight) {
+    statusHeight = sh;
+    document.documentElement.style.setProperty("--status-height", `${sh}px`);
+  }
 }
 
 type StatusTone = "ok" | "warn" | "error";
@@ -1011,7 +1030,16 @@ function statusActionsFor(tab: Tab): StatusAction[] {
   return [];
 }
 
+// `renderStatus` corre en cada pulsación en el editor: los botones solo se
+// reconstruyen si cambian las etiquetas; el clic usa siempre la acción vigente.
+let statusActionList: StatusAction[] = [];
+let statusActionKey = "";
+
 function renderStatusActions(actions: StatusAction[]) {
+  statusActionList = actions;
+  const key = actions.map((action) => action.label).join("\u0000");
+  if (key === statusActionKey) return;
+  statusActionKey = key;
   statusActions.replaceChildren(
     ...actions.map((action, index) => {
       const button = document.createElement("button");
@@ -1019,12 +1047,27 @@ function renderStatusActions(actions: StatusAction[]) {
       button.textContent = action.label;
       button.dataset.primary = String(index === 0);
       button.addEventListener("click", () => {
-        action.run();
+        statusActionList[index]?.run();
         editor?.view.focus();
       });
       return button;
     }),
   );
+}
+
+function setText(node: HTMLElement, text: string) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+// `ln N/M` se repinta en cada fotograma de scroll: no recorrer todo el documento cada vez.
+let lineCountText = "";
+let lineCountValue = 1;
+function totalLines(text: string) {
+  if (text !== lineCountText) {
+    lineCountText = text;
+    lineCountValue = lineStarts(text).length;
+  }
+  return lineCountValue;
 }
 
 function updateStatusPosition() {
@@ -1036,7 +1079,7 @@ function updateStatusPosition() {
     const line = state.doc.lineAt(head);
     text = `${line.number}:${head - line.from + 1}`;
   } else if (active && editable) {
-    const total = lineStarts(active.draft).length;
+    const total = totalLines(active.draft);
     const line = currentSourceLine() ?? 1;
     text = `ln ${line}/${total}`;
   }
@@ -1051,19 +1094,19 @@ function paintVimStatus() {
   }
 
   const status = editor.vimStatus();
-  statusMode.textContent = vimModeLabel(status.mode);
-  statusMode.dataset.mode = status.mode;
-  statusVim.textContent = vimStatusText(status);
+  setText(statusMode, vimModeLabel(status.mode));
+  if (statusMode.dataset.mode !== status.mode) statusMode.dataset.mode = status.mode;
+  setText(statusVim, vimStatusText(status));
   updateStatusPosition();
 }
 
 function renderStatus() {
   const tab = active;
   const mode = editor ? editor.vimStatus().mode : tab ? "view" : "index";
-  statusMode.textContent = editor ? vimModeLabel(mode) : tab ? "Vista" : "Índice";
-  statusMode.dataset.mode = mode;
-  statusVim.textContent = editor ? vimStatusText(editor.vimStatus()) : viewNav.pending;
-  statusPath.textContent = tab ? tab.path : "";
+  setText(statusMode, editor ? vimModeLabel(mode) : tab ? "Vista" : "Índice");
+  if (statusMode.dataset.mode !== mode) statusMode.dataset.mode = mode;
+  setText(statusVim, editor ? vimStatusText(editor.vimStatus()) : viewNav.pending);
+  setText(statusPath, tab ? tab.path : "");
   statusDirty.hidden = !tab?.dirty;
 
   let state = "Listo";
@@ -1098,11 +1141,11 @@ function renderStatus() {
     tone = transient.tone;
   }
 
-  statusState.textContent = state;
-  statusState.dataset.tone = tone;
-  statusMessage.textContent = message;
-  statusMessage.dataset.tone = tone;
-  statusMessage.title = message;
+  setText(statusState, state);
+  if (statusState.dataset.tone !== tone) statusState.dataset.tone = tone;
+  setText(statusMessage, message);
+  if (statusMessage.dataset.tone !== tone) statusMessage.dataset.tone = tone;
+  if (statusMessage.title !== message) statusMessage.title = message;
 
   updateStatusPosition();
   renderStatusActions(tab ? statusActionsFor(tab) : []);

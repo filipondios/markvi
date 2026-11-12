@@ -74,13 +74,36 @@ export function buildTextMap(root: Node): TextMap {
   return { text, spans };
 }
 
+function spanAt(
+  spans: readonly TextNodeSpan[],
+  offset: number,
+  accepts: (span: TextNodeSpan) => boolean,
+): TextNodeSpan | undefined {
+  let low = 0;
+  let high = spans.length - 1;
+  let found: TextNodeSpan | undefined;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const span = spans[middle]!;
+    if (span.start <= offset) {
+      found = span;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return found && accepts(found) ? found : undefined;
+}
+
 export function rangeFor(
   spans: readonly TextNodeSpan[],
   start: number,
   end: number,
 ): Range | undefined {
-  const from = spans.find((span) => start >= span.start && start < span.end);
-  const to = spans.find((span) => end > span.start && end <= span.end);
+  // Los tramos están ordenados y no se solapan: búsqueda binaria (antes `find` lineal
+  // por coincidencia, cuadrático en documentos grandes con muchas coincidencias).
+  const from = spanAt(spans, start, (span) => start < span.end);
+  const to = spanAt(spans, end - 1, (span) => end <= span.end);
   if (!from || !to || from.block !== to.block) return undefined;
 
   const range = document.createRange();
