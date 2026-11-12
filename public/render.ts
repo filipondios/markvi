@@ -2,7 +2,17 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import { Marked } from "marked";
 import { markedHighlight } from "marked-highlight";
+import {
+  createWikiIndex,
+  headingSlug,
+  joinRelative,
+  matchWikiLink,
+  wikiLabel,
+  wikiStartRegExp,
+  type WikiIndex,
+} from "../src/wiki.ts";
 import { annotateTokenLines, type LineToken } from "./lines.ts";
+import { normalizeNewPath } from "./newfile.ts";
 
 export const VIEW_PREFIX = "/view/";
 const FILES_PREFIX = "/files/";
@@ -48,6 +58,51 @@ if (renderer) {
   }
 }
 
+// Enlaces [[wiki]]: el tokenizador solo deja los datos en el <a>; el destino se
+// resuelve después sobre el DOM (`refreshWikiLinks`), porque depende del archivo
+// actual y de la lista de archivos, que puede cambiar sin volver a renderizar.
+const escapeHtml = (value: string) =>
+  value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+
+marked.use({
+  extensions: [
+    {
+      name: "wikilink",
+      level: "inline",
+      start(src: string) {
+        const index = src.indexOf("[[");
+        return index < 0 ? undefined : index;
+      },
+      tokenizer(src: string) {
+        const match = wikiStartRegExp().exec(src);
+        const ref = match && matchWikiLink(match);
+        if (!match || !ref) return undefined;
+        return {
+          type: "wikilink",
+          raw: match[0],
+          target: ref.target,
+          heading: ref.heading,
+          text: wikiLabel(ref),
+        };
+      },
+      renderer(token) {
+        return (
+          `<a class="wikilink" data-wiki-target="${escapeHtml(String(token.target))}"` +
+          ` data-wiki-heading="${escapeHtml(String(token.heading))}">` +
+          `${escapeHtml(String(token.text))}</a>`
+        );
+      },
+    },
+  ],
+});
+
+let wikiIndex: WikiIndex | null = null;
+
+/** Lista de archivos `.md` contra la que se resuelven los enlaces [[wiki]]. */
+export function setWikiFiles(files: readonly string[]) {
+  wikiIndex = createWikiIndex(files);
+}
+
 function addLineAttributes(html: string, token: LineToken): string {
   if (token.line === undefined) return html;
   const endLine = token.endLine ?? token.line;
@@ -80,6 +135,7 @@ export function renderMarkdown(
   template.innerHTML = DOMPurify.sanitize(marked.parser(tokens));
   const content = template.content;
   rewriteUrls(content, path);
+  refreshWikiLinks(content, path);
   markTaskItems(content, options.interactive === true);
   addHeadingIds(content);
   return content;
@@ -119,6 +175,52 @@ function rewriteUrls(content: DocumentFragment, path: string) {
   }
 }
 
+/** Archivo que se crearía al pulsar un enlace [[wiki]] roto, junto al documento actual. */
+function newWikiPath(target: string, from: string) {
+  const name = target.trim().replace(/\\/g, "/");
+  const rooted = name.startsWith("/");
+  const relative = /^\.{1,2}\//.test(name);
+  // Un nombre suelto (o `./`, `../`) cuelga de la carpeta del documento; una ruta
+  // con carpetas (`a/b`) o con `/` inicial, de la raíz.
+  const fromRoot = rooted || (name.includes("/") && !relative);
+  const base = fromRoot ? "" : from.slice(0, from.lastIndexOf("/") + 1);
+  const joined = joinRelative(base, rooted ? name.slice(1) : name);
+  return joined ? normalizeNewPath(joined) : null;
+}
+
+/**
+ * Resuelve los enlaces [[wiki]] de `root`: apuntan a su archivo, o se marcan como
+ * rotos y ofrecen crearlo. Se puede repetir sobre el mismo DOM (la lista de
+ * archivos cambió) sin volver a renderizar. Sin lista aún, se dejan sin destino.
+ */
+export function refreshWikiLinks(root: ParentNode, path: string) {
+  for (const link of root.querySelectorAll<HTMLAnchorElement>("a.wikilink")) {
+    link.classList.remove("missing");
+    link.removeAttribute("href");
+    link.removeAttribute("title");
+    delete link.dataset.wikiCreate;
+    if (!wikiIndex) continue;
+
+    const target = link.dataset.wikiTarget ?? "";
+    const heading = link.dataset.wikiHeading ?? "";
+    const hash = heading ? `#${encodeURIComponent(headingSlug(heading))}` : "";
+    const resolved = wikiIndex.resolve(target, path);
+
+    if (resolved) {
+      link.href = viewUrl(resolved) + hash;
+      link.title = resolved;
+      continue;
+    }
+
+    link.classList.add("missing");
+    const create = newWikiPath(target, path);
+    if (!create) continue;
+    link.href = viewUrl(create);
+    link.dataset.wikiCreate = create;
+    link.title = `Create ${create}`;
+  }
+}
+
 function markTaskItems(content: DocumentFragment, interactive: boolean) {
   for (const box of content.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')) {
     box.closest("li")?.classList.add("task");
@@ -135,11 +237,7 @@ function addHeadingIds(content: DocumentFragment) {
 
   for (const heading of content.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
     if (heading.id) continue;
-    const slug = (heading.textContent ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s_-]/gu, "")
-      .replace(/\s+/g, "-");
+    const slug = headingSlug(heading.textContent ?? "");
     if (!slug) continue;
 
     let id = slug;

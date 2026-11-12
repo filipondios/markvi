@@ -170,6 +170,26 @@ a:hover {
   text-decoration: underline;
 }
 
+/* Enlaces [[wiki]]: subrayado punteado; los rotos, discontinuos y con otro color. */
+a.wikilink {
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+a.wikilink:hover {
+  text-decoration-style: solid;
+}
+
+a.wikilink:not([href]) {
+  color: inherit;
+}
+
+a.wikilink.missing {
+  color: var(--error);
+  text-decoration-style: dashed;
+}
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

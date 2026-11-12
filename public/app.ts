@@ -6,6 +6,7 @@ import {
   type EditorSession,
   type FileCommand,
 } from "./editor.ts";
+import { createBacklinks } from "./backlinks.ts";
 import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
 import { applyAppearance, isDark, keyLabel, loadClientConfig } from "./config.ts";
@@ -32,7 +33,13 @@ import {
   renameRecent,
   serializeRecent,
 } from "./recent.ts";
-import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
+import {
+  refreshWikiLinks,
+  renderMarkdown,
+  setWikiFiles,
+  viewUrl,
+  VIEW_PREFIX,
+} from "./render.ts";
 import { createReadingCursor } from "./readingcursor.ts";
 import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
 import { createSelector, highlight } from "./selector.ts";
@@ -783,7 +790,47 @@ function submitPrompt() {
 
 async function listFiles() {
   const response = await api("/api/tree");
-  return ((await response.json()) as { files: string[] }).files;
+  const files = ((await response.json()) as { files: string[] }).files;
+  rememberFiles(files);
+  return files;
+}
+
+// --- Enlaces [[wiki]] ---------------------------------------------------------
+
+// Archivos conocidos, contra los que se resuelven los enlaces [[wiki]]. `null`
+// hasta la primera lectura del árbol.
+let wikiFiles: Set<string> | null = null;
+let wikiTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Guarda la lista de archivos. Si cambia, los enlaces ya pintados se vuelven a resolver. */
+function rememberFiles(files: readonly string[]) {
+  const first = wikiFiles === null;
+  const unchanged =
+    wikiFiles !== null && wikiFiles.size === files.length && files.every((f) => wikiFiles!.has(f));
+  if (unchanged) return;
+  wikiFiles = new Set(files);
+  setWikiFiles(files);
+  if (!first) repaintWikiLinks();
+}
+
+async function refreshWikiFiles() {
+  try {
+    await listFiles();
+  } catch {
+    // Sin lista, los enlaces [[wiki]] quedan sin destino hasta el próximo intento.
+  }
+}
+
+/** Vuelve a resolver los enlaces de la vista sin repintarla (conserva scroll y búsqueda). */
+function repaintWikiLinks() {
+  if (!active || editor || !editable || active.error) return;
+  refreshWikiLinks(content, active.path);
+}
+
+/** Crear o borrar un archivo cambia a dónde apuntan (o si rompen) los enlaces. */
+function scheduleWikiRefresh() {
+  clearTimeout(wikiTimer);
+  wikiTimer = setTimeout(() => void refreshWikiFiles(), 150);
 }
 
 function fileUrl(path: string) {
@@ -2167,6 +2214,12 @@ async function showTab(tab: Tab, scroll?: number) {
 
   if (id !== request) return;
 
+  // Los enlaces [[wiki]] se resuelven al pintar: hace falta la lista de archivos.
+  if (wikiFiles === null && !tab.error) {
+    await refreshWikiFiles();
+    if (id !== request) return;
+  }
+
   if (tab.error) {
     clearSearch();
     content.replaceChildren(
@@ -2388,6 +2441,9 @@ async function refreshIndex() {
 
 async function handleDiskChange(event: DiskEvent) {
   if (!active) scheduleIndexRefresh();
+  if (event.type === "delete" || (wikiFiles !== null && !wikiFiles.has(event.path))) {
+    scheduleWikiRefresh();
+  }
 
   const affected = tabs.filter(
     (tab) => tab.path === event.path && (tab.loaded || tab === active),
@@ -2488,7 +2544,18 @@ const grep = createGrep({
   open: jumpTo,
 });
 
-const anyModalOpen = () => finder.isOpen || recents.isOpen || grep.isOpen || toc.isOpen;
+const backlinks = createBacklinks({
+  path: () => active?.path,
+  async load(path) {
+    const response = await api(`/api/backlinks?path=${encodeURIComponent(path)}`);
+    return (await response.json()) as Awaited<ReturnType<Parameters<typeof createBacklinks>[0]["load"]>>;
+  },
+  read: readText,
+  open: jumpTo,
+});
+
+const anyModalOpen = () =>
+  finder.isOpen || recents.isOpen || grep.isOpen || backlinks.isOpen || toc.isOpen;
 
 const toc = createSelector<Heading>({
   title: "Table of contents",
@@ -2620,6 +2687,12 @@ const leaderRunners: Record<string, { label: string; run: () => void }> = {
       if (active) toc.open();
     },
   },
+  backlinks: {
+    label: "Backlinks",
+    run: () => {
+      if (active) backlinks.open();
+    },
+  },
   close: {
     label: "Close tab",
     run: () => {
@@ -2653,6 +2726,14 @@ document.addEventListener("click", (event) => {
   const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
   if (!(link instanceof HTMLAnchorElement)) return;
   if ((link.target && link.target !== "_self") || link.hasAttribute("download")) return;
+
+  // [[Enlace]] a un archivo que no existe: se ofrece crearlo.
+  const create = link.dataset.wikiCreate;
+  if (create) {
+    event.preventDefault();
+    if (confirm(`${create} does not exist. Create it?`)) void createFile(create, "current");
+    return;
+  }
 
   const url = new URL(link.href);
   if (url.origin !== location.origin) return;

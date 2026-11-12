@@ -4,7 +4,15 @@
 export type Theme = "auto" | "light" | "dark";
 
 /** Acciones de la tecla líder. Un valor que empieza por `:` ejecuta ese comando ex. */
-export const LEADER_ACTIONS = ["find", "grep", "recent", "alternate", "toc", "close"] as const;
+export const LEADER_ACTIONS = [
+  "find",
+  "grep",
+  "recent",
+  "alternate",
+  "toc",
+  "backlinks",
+  "close",
+] as const;
 export type LeaderAction = (typeof LEADER_ACTIONS)[number];
 
 export interface LeaderBinding {
@@ -54,6 +62,7 @@ export const DEFAULT_LEADER_BINDINGS: readonly LeaderBinding[] = [
   { keys: ["r"], action: "recent" },
   { keys: ["a"], action: "alternate" },
   { keys: ["t"], action: "toc" },
+  { keys: ["b"], action: "backlinks" },
   { keys: ["x"], action: "close" },
 ];
 

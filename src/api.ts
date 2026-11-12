@@ -1,5 +1,5 @@
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, posix } from "node:path";
 import {
   HttpError,
   isMarkdown,
@@ -9,6 +9,7 @@ import {
   resolveWritable,
 } from "./files.ts";
 import { loadConfig, resolveConfigPath } from "./config.ts";
+import { searchBacklinks } from "./backlinks.ts";
 import { searchMarkdown } from "./search.ts";
 import type { DiskEvent, FileWatcher } from "./watch.ts";
 
@@ -259,6 +260,15 @@ export function createRoutes(
         const query = (new URL(req.url).searchParams.get("q") ?? "").trim();
         if (query.length > MAX_QUERY) throw new HttpError(400, "The query is too long.");
         return Response.json(await searchMarkdown(root, query), { headers: NO_STORE });
+      }),
+    },
+    // Líneas de otros archivos que enlazan a `path` (`[[wiki]]` o enlaces Markdown).
+    "/api/backlinks": {
+      GET: guard(async (req) => {
+        await markdownFile(req);
+        const path = new URL(req.url).searchParams.get("path") ?? "";
+        const target = posix.normalize(path.replace(/\\/g, "/")).replace(/^\.\//, "");
+        return Response.json(await searchBacklinks(root, target), { headers: NO_STORE });
       }),
     },
     "/api/events": {

@@ -41,7 +41,12 @@ const CONTEXT_BEFORE = 40;
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function buildHit(path: string, line: number, raw: string, ranges: [number, number][]): SearchHit {
+export function buildHit(
+  path: string,
+  line: number,
+  raw: string,
+  ranges: [number, number][],
+): SearchHit {
   const lead = raw.length - raw.trimStart().length;
   let start = lead;
   let end = raw.trimEnd().length;

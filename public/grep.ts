@@ -82,7 +82,7 @@ export function createGrep(options: GrepOptions): Grep {
 }
 
 /** Resalta el bloque más profundo que contiene la línea y lo centra en el preview. */
-function markHit(body: HTMLElement, line: number) {
+export function markHit(body: HTMLElement, line: number) {
   body.querySelectorAll(".finder-hit").forEach((node) => node.classList.remove("finder-hit"));
 
   let best: HTMLElement | undefined;

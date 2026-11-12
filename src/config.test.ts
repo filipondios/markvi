@@ -22,6 +22,7 @@ test("sin archivo o vacío: valores por omisión y sin avisos", () => {
   expect(keysOf(defaultConfig())).toEqual([
     "/=grep",
     "a=alternate",
+    "b=backlinks",
     "f=find",
     "r=recent",
     "t=toc",
@@ -115,6 +116,7 @@ test("keymap.leader: redefine, añade, quita y admite comandos ex", () => {
   expect(keysOf(config)).toEqual([
     "/=grep",
     "a=alternate",
+    "b=backlinks",
     "f=grep",
     "g t=toc",
     "n=:e diario.md",
