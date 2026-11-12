@@ -30,13 +30,35 @@ In the rendered view:
 | `gt` / `gT`         | Next / previous tab              |
 | `{n}gt`             | Go to tab n                      |
 | `Ctrl-o` / `Ctrl-i` | Back / forward in history        |
-| `:`                 | Command (`:e`, `:q`, `:w`)       |
+| `x`                 | Toggle the task at the cursor    |
+| `Ctrl-^`            | Alternate with the previous file |
+| `:`                 | Command (`:e`, `:mv`, `:rm`, `:q`, `:w`) |
 | `a` / `i`           | Enter the editor in Normal mode  |
-| `space` + `f`       | Search files                     |
+| `space` + `f`       | Search files (create if no match)|
+| `space` + `/`       | Search text in all files         |
+| `space` + `r`       | Recent files                     |
+| `space` + `a`       | Alternate file (same as `Ctrl-^`)|
 | `space` + `t`       | Document table of contents (TOC) |
 | `space` + `x`       | Close the active tab             |
 
 Counts work just like in Vim: `5j`, `3]]`, `2gt`, `10G`. The pending key is displayed in the bottom status bar. Pressing `space` and waiting about 300 ms opens a panel showing the available continuations.
+
+## Tasks
+
+Checkboxes (`- [ ]` / `- [x]`) in the rendered view are interactive: click one, or press `x` to toggle the task at the cursor. The change is written to the file right away, using the tab's `ETag`, so a file that changed on disk is never overwritten. If the tab has unsaved changes, the task is only updated in the draft (`:w` saves it). The status bar shows how many tasks are done, for example `12/20`.
+
+## Files
+
+| Command                  | Action                                                                                         |
+| ------------------------ | ---------------------------------------------------------------------------------------------- |
+| `:e name`                | Open a file. Without `.md` or `/` the name is matched fuzzily, and a new file is created only if nothing matches. With `.md` or `/` the name is exact, so `:e notes/new.md` always creates it when missing |
+| `:e #`                   | Alternate file                                                                                 |
+| `:mv new-name`           | Rename (or move) the current file; save your changes first                                     |
+| `:rm`                    | Delete the current file, after a confirmation. `:rm!` skips it and ignores changes on disk     |
+
+New files get a `.md` extension and are created inside the directory (never outside it, and never hidden). The file finder (`space` + `f`) offers to create the file when there are no matches. `:mv` and `:rm` also work from the editor.
+
+`space` + `/` searches the text of every Markdown file (live, smart-case, literal text) and previews the matching block; `Enter` opens the file at that line. `space` + `r` lists recently opened files, most recent first. `Ctrl-^` and `space` + `a` jump back to the previous one. Many browsers reserve `Ctrl` + digits for their own tab switching and some keyboard layouts need `Shift` for `^`, which is why `space` + `a` exists as well.
 
 ## Document Table of Contents
 
@@ -71,6 +93,8 @@ The browser reserves `Ctrl+W`, `Ctrl+T`, and `Ctrl+N` for its own actions (close
 The server watches the directory using `fs.watch` and sends notifications over SSE. If a file changes on disk and there are no local edits, the tab reloads automatically. If there is an unsaved draft, the bottom status bar displays a conflict notification with options to reload or overwrite the file.
 
 Saves use `ETag`/`If-Match`: if the file changes between reading and saving, the server responds with `409` instead of overwriting someone else's changes.
+
+Requests that modify files (`POST`, `PUT`, `DELETE`) are rejected when their `Origin` header does not belong to the server, so another website open in your browser cannot create or delete your notes.
 
 ## Build as a Command-Line Tool
 
