@@ -1238,11 +1238,26 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
   vimStatusTimer = setInterval(paintVimStatus, 100);
 }
 
-async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
+// Los guardados de una misma pestaña van en cola: un segundo `:w` lanzado antes de
+// que termine el primero usaría un etag viejo (If-Match) y fallaría con conflicto.
+const saveQueue = new WeakMap<Tab, Promise<unknown>>();
+
+function saveDraft(tab: Tab, options: { force?: boolean } = {}): Promise<boolean> {
+  const previous = saveQueue.get(tab) ?? Promise.resolve();
+  const run = previous.then(() => writeDraft(tab, options));
+  saveQueue.set(
+    tab,
+    run.catch(() => undefined),
+  );
+  return run;
+}
+
+async function writeDraft(tab: Tab, options: { force?: boolean } = {}) {
   if (tab !== active) return false;
 
   const text = editor ? editor.view.state.doc.toString() : tab.draft;
   tab.draft = text;
+  const savedRaw = tab.raw;
   const savedCursor = editor?.view.state.selection.main.head;
   const savedEtag = tab.etag;
   if (savedCursor !== undefined) tab.cursor = savedCursor;
@@ -1257,7 +1272,11 @@ async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
       body: text,
     });
 
-    if (tab.raw !== text || tab.etag !== savedEtag) return true;
+    // Solo se descarta si otro flujo (recarga desde disco, recreateTab...) avanzó el
+    // buffer mientras la petición estaba en vuelo. Comparar `raw` con `text` aquí
+    // era el bug: con cambios sin guardar siempre difieren y se salía sin actualizar
+    // raw/dirty/etag, dejando «Sin guardar» y un If-Match obsoleto.
+    if (tab.raw !== savedRaw || tab.etag !== savedEtag) return true;
 
     const responseEtag = response.headers.get("etag") ?? savedEtag;
     tab.raw = text;
@@ -1275,7 +1294,7 @@ async function saveDraft(tab: Tab, options: { force?: boolean } = {}) {
     if (tab === active) notify("Guardado en disco", "ok", 2500);
     return true;
   } catch (error) {
-    if (tab.raw !== text || tab.etag !== savedEtag) {
+    if (tab.raw !== savedRaw || tab.etag !== savedEtag) {
       // Otro guardado/edición ya avanzó este buffer mientras fallaba la petición.
       return false;
     }
@@ -2417,10 +2436,22 @@ window.addEventListener(
   },
   { passive: true },
 );
-window.addEventListener("resize", relayout);
+// Fuera del callback del ResizeObserver: relayout cambia métricas/estilos de lo que
+// se observa y el navegador avisa «ResizeObserver loop completed with undelivered
+// notifications» (el overlay de Bun lo muestra como Runtime error).
+let relayoutFrame = 0;
+const scheduleRelayout = () => {
+  if (relayoutFrame) return;
+  relayoutFrame = requestAnimationFrame(() => {
+    relayoutFrame = 0;
+    relayout();
+  });
+};
+
+window.addEventListener("resize", scheduleRelayout);
 
 if (typeof ResizeObserver !== "undefined") {
-  const observer = new ResizeObserver(relayout);
+  const observer = new ResizeObserver(scheduleRelayout);
   observer.observe(bar);
   observer.observe(statusBar);
   observer.observe(content);
