@@ -90,6 +90,37 @@ function scrolloffOption(value?: number) {
   return defaultScrolloff;
 }
 
+/** Valores iniciales de `:set` desde la configuración (antes de crear el editor). */
+export function setEditorDefaults(defaults: {
+  number?: boolean;
+  relativenumber?: boolean;
+  scrolloff?: number;
+}) {
+  if (defaults.number !== undefined) defaultNumber = defaults.number;
+  if (defaults.relativenumber !== undefined) defaultRelative = defaults.relativenumber;
+  if (defaults.scrolloff !== undefined) defaultScrolloff = Math.max(0, Math.round(defaults.scrolloff));
+}
+
+export interface VimMappingInput {
+  context: "normal" | "insert" | "visual";
+  lhs: string;
+  rhs: string;
+}
+
+/** Aplica los mapeos del usuario; devuelve un mensaje por cada uno que la librería rechaza. */
+export function applyVimMappings(mappings: readonly VimMappingInput[]) {
+  const failures: string[] = [];
+  for (const { context, lhs, rhs } of mappings) {
+    try {
+      Vim.map(lhs, rhs, context);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      failures.push(`keymap.${context}: ${JSON.stringify(lhs)} could not be mapped (${reason}).`);
+    }
+  }
+  return failures;
+}
+
 Vim.defineOption("number", true, "boolean", ["nu"], numberOption);
 Vim.defineOption("relativenumber", false, "boolean", ["rnu"], relativeOption);
 Vim.defineOption("scrolloff", 0, "number", ["so"], scrolloffOption);

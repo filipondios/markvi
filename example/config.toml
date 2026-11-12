@@ -1,0 +1,50 @@
+# MarkVi configuration. Copy this file to ~/.config/markvi/config.toml
+# (or point to it with `markvi <dir> --config path/to/config.toml`).
+# Everything is optional: what you leave out keeps its default.
+# The file is read on every page load, so reload the browser to apply changes.
+
+# Leader key: "space" (default) or a single symbol such as "," or "\".
+# Letters and digits are not allowed: they are used by the viewer.
+# leader = "space"
+
+# "auto" follows the system, or force "light" / "dark".
+# theme = "auto"
+
+# Monospace font for the viewer code and the editor. Several names are
+# tried in order; if none is installed, Obel Mono is used.
+# font = "JetBrains Mono, Fira Code"
+
+# Defaults for the editor (the same options as `:set nu`, `:set rnu`, `:set so=N`).
+[editor]
+# number = true
+# relativenumber = false
+# scrolloff = 0
+
+# Leader shortcuts: the keys pressed after the leader key.
+# Actions: find, grep, recent, alternate, toc, close.
+# An action starting with ":" runs that command. "none" removes a shortcut.
+# A sequence can have up to 4 keys ("gt" is g then t), but it cannot start
+# with another bound sequence: unbind "f" first to use "ff".
+[keymap.leader]
+# f = "find"
+# "/" = "grep"
+# r = "recent"
+# a = "alternate"
+# t = "toc"
+# x = "close"
+# n = ":e diary.md"
+
+# Rendered view: a pressed key behaves as another one (one key to one key).
+[keymap.view]
+# J = "j"
+# K = "k"
+
+# Editor mappings (Vim `:nmap`, `:imap`, `:vmap`), left side = right side.
+[keymap.normal]
+# H = "^"
+# L = "$"
+
+[keymap.insert]
+# jk = "<Esc>"
+
+[keymap.visual]

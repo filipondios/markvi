@@ -3,11 +3,12 @@ import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import index from "./public/index.html";
 import { createRoutes } from "./src/api.ts";
+import { loadConfig, resolveConfigPath } from "./src/config.ts";
 import { createFileWatcher } from "./src/watch.ts";
 
 const command =
   Bun.argv[1] && !Bun.argv[1].endsWith(".ts") ? basename(Bun.argv[1]) : "bun run server.ts";
-const USAGE = `Usage: ${command} <directory> [--port <port>]`;
+const USAGE = `Usage: ${command} <directory> [--port <port>] [--config <file>]`;
 const HOSTNAME = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 
@@ -20,7 +21,10 @@ function readArgs() {
   try {
     return parseArgs({
       args: Bun.argv.slice(2),
-      options: { port: { type: "string", short: "p" } },
+      options: {
+        port: { type: "string", short: "p" },
+        config: { type: "string", short: "c" },
+      },
       allowPositionals: true,
     });
   } catch (error) {
@@ -52,6 +56,7 @@ function resolvePort(value: string | undefined) {
 const { values, positionals } = readArgs();
 const root = await resolveRoot(positionals);
 const port = resolvePort(values.port);
+const configPath = resolveConfigPath(values.config);
 const watcher = createFileWatcher(root);
 
 function startServer() {
@@ -68,7 +73,7 @@ function startServer() {
       routes: {
         "/": index,
         "/view/*": index,
-        ...createRoutes(root, port, watcher),
+        ...createRoutes(root, port, watcher, configPath),
       },
       fetch() {
         return new Response("Not found", { status: 404 });
@@ -94,3 +99,11 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 console.log(`markvi serving ${root}`);
 console.log(`${server.url}`);
+
+const loaded = await loadConfig(configPath);
+console.log(
+  loaded.exists
+    ? `config: ${configPath}`
+    : `config: ${configPath} (not found, using defaults)`,
+);
+for (const warning of loaded.warnings) console.warn(`  warning: ${warning}`);

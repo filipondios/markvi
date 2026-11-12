@@ -8,6 +8,7 @@ import {
   resolveNew,
   resolveWritable,
 } from "./files.ts";
+import { loadConfig, resolveConfigPath } from "./config.ts";
 import { searchMarkdown } from "./search.ts";
 import type { DiskEvent, FileWatcher } from "./watch.ts";
 
@@ -31,7 +32,12 @@ const MAX_QUERY = 200;
 // para detectar que el archivo cambió entre la lectura y el guardado.
 const etagFor = (content: string) => `"${Bun.hash(content).toString(16)}"`;
 
-export function createRoutes(root: string, port: number, watcher: FileWatcher) {
+export function createRoutes(
+  root: string,
+  port: number,
+  watcher: FileWatcher,
+  configPath = resolveConfigPath(undefined),
+) {
   const suffix = port === 80 ? "" : `:${port}`;
   const hosts = new Set([`127.0.0.1${suffix}`, `localhost${suffix}`]);
   const origins = new Set([`http://127.0.0.1${suffix}`, `http://localhost${suffix}`]);
@@ -244,6 +250,10 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
       }),
     },
     // Búsqueda de texto en todos los archivos Markdown (live grep).
+    // La configuración se lee en cada petición: recargar la página aplica los cambios.
+    "/api/config": {
+      GET: guard(async () => Response.json(await loadConfig(configPath), { headers: NO_STORE })),
+    },
     "/api/search": {
       GET: guard(async (req) => {
         const query = (new URL(req.url).searchParams.get("q") ?? "").trim();

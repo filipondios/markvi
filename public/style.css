@@ -56,8 +56,10 @@
   --hl-del: #82071e;
 }
 
+/* Tema oscuro: el del sistema (salvo que se fije «light») o el forzado desde la
+   configuración con `theme = "dark"` (atributo `data-theme` de <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0d1117;
     --surface: #151b23;
     --surface-raised: #1c232c;
@@ -95,6 +97,50 @@
     --hl-add: #7ee787;
     --hl-del: #ffa198;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --surface: #151b23;
+  --surface-raised: #1c232c;
+  --surface-sunken: #0a0e13;
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  --fg: #e6edf3;
+  --muted: #9198a1;
+  --faint: #6e7681;
+
+  --border: #3d444d;
+  --border-strong: #545d68;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+
+  --accent: #4493f8;
+  --accent-fg: #0d1117;
+  --link: #4493f8;
+  --error: #f85149;
+  --warn: #d29922;
+  --ok: #7ee787;
+
+  --mode-normal: #4493f8;
+  --mode-insert: #7ee787;
+  --mode-visual: #d2a8ff;
+  --mode-replace: #d29922;
+  --mode-view: #9198a1;
+  --mode-index: #9198a1;
+
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-title: #d2a8ff;
+  --hl-type: #ffa657;
+  --hl-name: #7ee787;
+  --hl-add: #7ee787;
+  --hl-del: #ffa198;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {

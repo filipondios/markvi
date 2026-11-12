@@ -1,11 +1,14 @@
 import {
+  applyVimMappings,
   createEditor,
+  setEditorDefaults,
   type EditorExitOptions,
   type EditorSession,
   type FileCommand,
 } from "./editor.ts";
 import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
+import { applyAppearance, isDark, keyLabel, loadClientConfig } from "./config.ts";
 import { createGrep } from "./grep.ts";
 import { hintLabels } from "./hints.ts";
 import { createLeader, isModifierKey } from "./keys.ts";
@@ -56,6 +59,21 @@ const promptBar = document.querySelector<HTMLElement>("#prompt")!;
 const promptPrefix = document.querySelector<HTMLElement>("#prompt-prefix")!;
 const promptInput = document.querySelector<HTMLInputElement>("#prompt-input")!;
 const themePreference = matchMedia("(prefers-color-scheme: dark)");
+
+// Configuración del usuario (~/.config/markvi/config.toml). Se aplica antes de
+// crear nada: tema, fuente, opciones y mapeos del editor.
+const loadedConfig = await loadClientConfig();
+const config = loadedConfig.config;
+const configWarnings = [...loadedConfig.warnings];
+applyAppearance(config);
+setEditorDefaults(config.editor);
+configWarnings.push(...applyVimMappings(config.vimMappings));
+
+/** ¿Es esta la tecla líder? (AltGr cuenta como Ctrl+Alt: no se descarta.) */
+function isLeaderKey(event: KeyboardEvent) {
+  if (event.key !== config.leader || event.metaKey) return false;
+  return !event.ctrlKey || event.altKey;
+}
 
 type Mode = TabMode;
 
@@ -1128,6 +1146,15 @@ async function runEx(input: string) {
     case "edit":
       await openPath(argument);
       return;
+    case "config":
+      notify(
+        loadedConfig.exists
+          ? `Config: ${loadedConfig.path}${configWarnings.length > 0 ? ` (${configWarnings.length} warning${configWarnings.length === 1 ? "" : "s"})` : ""}`
+          : `No config file. Create ${loadedConfig.path || "~/.config/markvi/config.toml"}`,
+        "ok",
+        6000,
+      );
+      return;
     case "mv":
     case "move":
     case "rename":
@@ -1569,7 +1596,7 @@ function updateChrome() {
 }
 
 function setTheme() {
-  editor?.setDark(themePreference.matches);
+  editor?.setDark(isDark(config, themePreference.matches));
 }
 
 themePreference.addEventListener("change", setTheme);
@@ -2565,7 +2592,7 @@ function paintWhichKey() {
   const fragment = document.createDocumentFragment();
   for (const action of actions) {
     const row = element("div", "", "which-key-row");
-    const key = element("kbd", action.keys[pending.length] ?? "", "which-key-key");
+    const key = element("kbd", keyLabel(action.keys[pending.length] ?? ""), "which-key-key");
     const label = element("span", action.label ?? action.keys.join(""), "which-key-label");
     row.append(key, label);
     fragment.append(row);
@@ -2582,27 +2609,36 @@ function scheduleWhichKey() {
   }, 300);
 }
 
+const leaderRunners: Record<string, { label: string; run: () => void }> = {
+  find: { label: "Find file", run: () => finder.open() },
+  grep: { label: "Search text", run: () => grep.open() },
+  recent: { label: "Recent files", run: () => recents.open() },
+  alternate: { label: "Alternate file", run: () => void alternateFile() },
+  toc: {
+    label: "Table of contents",
+    run: () => {
+      if (active) toc.open();
+    },
+  },
+  close: {
+    label: "Close tab",
+    run: () => {
+      if (active) closeTab(active);
+    },
+  },
+};
+
+// Los atajos vienen de la configuración (ya fusionados con los de serie). Una
+// acción que empieza por `:` ejecuta ese comando ex.
 const leader = createLeader(
-  [
-    { keys: ["f"], label: "Find file", run: () => finder.open() },
-    { keys: ["/"], label: "Search text", run: () => grep.open() },
-    { keys: ["r"], label: "Recent files", run: () => recents.open() },
-    { keys: ["a"], label: "Alternate file", run: () => void alternateFile() },
-    {
-      keys: ["t"],
-      label: "Table of contents",
-      run: () => {
-        if (active) toc.open();
-      },
-    },
-    {
-      keys: ["x"],
-      label: "Close tab",
-      run: () => {
-        if (active) closeTab(active);
-      },
-    },
-  ],
+  config.leaderBindings.flatMap(({ keys, action }) => {
+    if (action.startsWith(":")) {
+      const command = action.slice(1).trim();
+      return [{ keys, label: action, run: () => void runEx(command) }];
+    }
+    const runner = leaderRunners[action];
+    return runner ? [{ keys, label: runner.label, run: runner.run }] : [];
+  }),
   { timeout: 0, onCancel: hideWhichKey },
 );
 
@@ -2773,7 +2809,7 @@ document.addEventListener(
       return;
     }
 
-    if (event.key === " " && editor.vimStatus().mode === "normal") {
+    if (isLeaderKey(event) && editor.vimStatus().mode === "normal") {
       event.preventDefault();
       event.stopPropagation();
       leader.start();
@@ -2800,16 +2836,20 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (event.key === " ") {
+  if (isLeaderKey(event)) {
     event.preventDefault();
     leader.start();
     scheduleWhichKey();
     return;
   }
 
+  // `[keymap.view]`: otra tecla puede hacer de `j`, `k`, `a`... (sin modificadores).
+  const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+  const viewKey = plain ? (config.viewRemap[event.key] ?? event.key) : event.key;
+
   if (!editor && editable && active) {
     const command = viewNav.handle({
-      key: event.key,
+      key: viewKey,
       ctrl: event.ctrlKey,
       meta: event.metaKey,
       alt: event.altKey,
@@ -2830,7 +2870,7 @@ document.addEventListener("keydown", (event) => {
 
   if (event.altKey || event.ctrlKey || event.metaKey) return;
 
-  const key = event.key.toLowerCase();
+  const key = viewKey.toLowerCase();
   if ((key === "a" || key === "i") && !editor && editable && active) {
     event.preventDefault();
     enterEditor(active);
@@ -2928,6 +2968,9 @@ if (typeof ResizeObserver !== "undefined") {
 }
 
 const initialPath = currentPath();
+if (configWarnings.length > 0) {
+  for (const warning of configWarnings) console.warn(`markvi config: ${warning}`);
+}
 if (initialPath) {
   const tab = ensureTab(initialPath);
   active = tab;
@@ -2936,4 +2979,10 @@ if (initialPath) {
   void showTab(tab);
 } else {
   void showIndex();
+}
+
+// Un aviso a la vista (todos van a la consola); `:config` recuerda de dónde se lee.
+if (configWarnings.length > 0) {
+  const more = configWarnings.length > 1 ? ` (+${configWarnings.length - 1} more, see the console)` : "";
+  notify(`Config: ${configWarnings[0]}${more}`, "warn", 10000);
 }
