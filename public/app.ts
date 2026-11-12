@@ -1,6 +1,12 @@
-import { createEditor, type EditorExitOptions, type EditorSession } from "./editor.ts";
+import {
+  createEditor,
+  type EditorExitOptions,
+  type EditorSession,
+  type FileCommand,
+} from "./editor.ts";
 import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
+import { createGrep } from "./grep.ts";
 import { hintLabels } from "./hints.ts";
 import { createLeader, isModifierKey } from "./keys.ts";
 import {
@@ -13,11 +19,22 @@ import {
   readingReferenceY,
   type BlockBox,
 } from "./lines.ts";
+import { normalizeNewPath } from "./newfile.ts";
+import {
+  alternatePath,
+  parseRecent,
+  recentChoices,
+  recordVisit,
+  removeRecent,
+  renameRecent,
+  serializeRecent,
+} from "./recent.ts";
 import { renderMarkdown, viewUrl, VIEW_PREFIX } from "./render.ts";
 import { createReadingCursor } from "./readingcursor.ts";
 import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
 import { createSelector, highlight } from "./selector.ts";
 import { parseStoredTabs, serializeTabs, tabLabels, type TabMode } from "./tabstore.ts";
+import { toggleTask } from "./tasks.ts";
 import { extractHeadings, type Heading } from "./toc.ts";
 import { createViewNav, type ViewCommand } from "./viewnav.ts";
 import { vimModeLabel, vimStatusText } from "./vimui.ts";
@@ -32,6 +49,7 @@ const statusDirty = document.querySelector<HTMLElement>("#status-dirty")!;
 const statusVim = document.querySelector<HTMLElement>("#status-vim")!;
 const statusState = document.querySelector<HTMLElement>("#status-state")!;
 const statusMessage = document.querySelector<HTMLElement>("#status-message")!;
+const statusTasks = document.querySelector<HTMLElement>("#status-tasks")!;
 const statusPosition = document.querySelector<HTMLElement>("#status-position")!;
 const statusActions = document.querySelector<HTMLElement>("#status-actions")!;
 const promptBar = document.querySelector<HTMLElement>("#prompt")!;
@@ -76,6 +94,12 @@ class ApiError extends Error {
 }
 
 const STORAGE_KEY = "markvi:tabs";
+const RECENT_KEY = "markvi:recent";
+
+// Archivos visitados, el más reciente primero (para `space + r` y `Ctrl-^`).
+let recent = loadRecent();
+// Casillas de la vista renderizada: marcadas / total.
+let taskCounts = { done: 0, total: 0 };
 
 const tabs: Tab[] = [];
 let active: Tab | null = null;
@@ -714,7 +738,7 @@ function openPrompt(mode: "search" | "ex", direction: 1 | -1 = 1) {
   promptPrefix.textContent = mode === "search" ? (direction > 0 ? "/" : "?") : ":";
   promptInput.value = "";
   promptInput.placeholder =
-    mode === "search" ? "Search in document…" : ":e file · :q · :w";
+    mode === "search" ? "Search in document…" : ":e file · :mv · :rm · :q · :w";
   promptBar.hidden = false;
   promptInput.focus();
 }
@@ -739,17 +763,320 @@ function submitPrompt() {
   }
 }
 
-function normalizePath(input: string) {
-  let path = input.trim().replace(/^\.\//, "");
-  if (!path) return "";
-  if (!path.toLowerCase().endsWith(".md")) path += ".md";
-  return path;
+async function listFiles() {
+  const response = await api("/api/tree");
+  return ((await response.json()) as { files: string[] }).files;
 }
 
-async function openPath(input: string) {
-  const path = normalizePath(input);
+function fileUrl(path: string) {
+  return `/api/file?path=${encodeURIComponent(path)}`;
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// --- Archivos recientes y alternado -----------------------------------------
+
+function loadRecent() {
+  try {
+    return parseRecent(localStorage.getItem(RECENT_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function saveRecent() {
+  try {
+    localStorage.setItem(RECENT_KEY, serializeRecent(recent));
+  } catch {
+    // Sin localStorage la lista vive solo en memoria.
+  }
+}
+
+function visit(path: string) {
+  recent = recordVisit(recent, path);
+  saveRecent();
+}
+
+/** `Ctrl-^`: vuelve al archivo anterior (el más reciente distinto del actual). */
+async function alternateFile() {
+  let files: string[];
+  try {
+    files = await listFiles();
+  } catch (error) {
+    notify(errorText(error), "error", 3000);
+    return;
+  }
+
+  const path = alternatePath(recentChoices(recent, files), active?.path);
   if (!path) {
+    notify("No alternate file", "warn", 2500);
+    return;
+  }
+  openInNewTab(path);
+}
+
+// --- Saltar a una línea (resultados de la búsqueda de texto) ----------------
+
+let pendingJump: { path: string; line: number } | undefined;
+
+function takeJump(path: string) {
+  if (pendingJump?.path !== path) return undefined;
+  const { line } = pendingJump;
+  pendingJump = undefined;
+  return line;
+}
+
+function jumpTo(path: string, line: number) {
+  const tab = findTab(path);
+  if (tab && tab === active && tab.loaded && !tab.error) {
+    if (editor) {
+      // Se reabre el editor en la línea: así el cursor queda donde se espera.
+      const cursor = cursorForLine(editor.view.state.doc.toString(), line);
+      leaveEditor();
+      tab.cursor = cursor;
+      enterEditor(tab, { cursor, screenY: referenceY() });
+    } else {
+      scrollToSourceLine(line);
+    }
+    return;
+  }
+
+  pendingJump = { path, line };
+  openInNewTab(path);
+}
+
+// --- Casillas de tareas ------------------------------------------------------
+
+function taskBoxOf(target: EventTarget | null) {
+  if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") return null;
+  return target.closest("li.task") ? target : null;
+}
+
+function refreshTaskCounts() {
+  const boxes = content.querySelectorAll<HTMLInputElement>('li.task input[type="checkbox"]');
+  let done = 0;
+  boxes.forEach((box) => {
+    if (box.checked) done++;
+  });
+  taskCounts = { done, total: boxes.length };
+}
+
+/** Pinta la vista renderizada con las casillas activas. */
+function paintView(tab: Tab) {
+  content.replaceChildren(renderMarkdown(tab.draft, tab.path, { interactive: true }));
+  refreshTaskCounts();
+}
+
+/** Invierte la casilla de la línea `item` y la guarda con el ETag de la pestaña. */
+async function commitTask(item: HTMLElement) {
+  const tab = active;
+  if (!tab || editor || !editable) return;
+
+  const line = Number(item.dataset.line);
+  const box = item.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  const result = Number.isInteger(line) ? toggleTask(tab.draft, line) : null;
+  if (!result) {
+    // La vista y el texto no coinciden: se repinta desde el borrador.
+    notify("Could not toggle the task", "warn", 2500);
+    paintView(tab);
+    invalidateBlocks();
+    updateStatusPosition();
+    return;
+  }
+
+  const wasDirty = tab.dirty;
+  tab.draft = result.text;
+  tab.dirty = tab.draft !== tab.raw;
+  if (box) box.checked = result.checked;
+  refreshTaskCounts();
+  updateChrome();
+  syncTabState();
+
+  // Con cambios sin guardar no se escribe nada: se guardaría también lo demás.
+  if (wasDirty) {
+    notify("Task updated. You have unsaved changes: :w to save", "warn", 3000);
+    return;
+  }
+  await saveDraft(tab);
+}
+
+/** `x`: invierte la tarea bajo el cursor de lectura. */
+function toggleSelectedTask() {
+  const element = currentBlock()?.element;
+  const item = element
+    ? (element.closest<HTMLElement>("li.task") ?? element.querySelector<HTMLElement>(":scope > li.task"))
+    : null;
+  if (!item) {
+    notify("No task at the cursor", "warn", 2000);
+    return;
+  }
+  void commitTask(item);
+}
+
+// --- Crear, renombrar y borrar archivos ------------------------------------
+
+async function createFile(path: string, target: "new" | "current") {
+  let created = true;
+  try {
+    await api(fileUrl(path), {
+      method: "POST",
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body: "",
+    });
+    notify(`Created ${path}`, "ok", 2500);
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 409)) {
+      notify(errorText(error), "error", 3500);
+      return;
+    }
+    created = false;
+    notify(`${path} already exists`, "warn", 2500);
+  }
+
+  if (target === "current") openInCurrentTab(path);
+  else openInNewTab(path);
+
+  // Un archivo recién creado está vacío: se abre directamente para escribir.
+  const tab = findTab(path);
+  if (created && tab && !tab.dirty) tab.mode = "edit";
+}
+
+async function moveActive(input: string) {
+  const tab = active;
+  if (!tab) {
+    notify("No file to rename", "warn", 2500);
+    return;
+  }
+
+  const dest = normalizeNewPath(input);
+  if (!dest) {
+    notify(input.trim() ? "Invalid file name" : "Missing new name", "warn", 3000);
+    return;
+  }
+  if (dest === tab.path) return;
+  if (findTab(dest)) {
+    notify(`${dest} is already open`, "warn", 3000);
+    return;
+  }
+  if (tab.dirty) {
+    notify("Save your changes before renaming (:w)", "warn", 3000);
+    return;
+  }
+
+  // Se renombra la pestaña antes de la petición: los eventos del disco del
+  // archivo viejo ya no la encuentran y no la tratan como borrada.
+  const from = tab.path;
+  tab.path = dest;
+  renderTabs();
+  updateChrome();
+
+  try {
+    await api("/api/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to: dest }),
+    });
+  } catch (error) {
+    tab.path = from;
+    renderTabs();
+    updateChrome();
+    notify(
+      error instanceof ApiError && error.status === 409 ? `${dest} already exists` : errorText(error),
+      "error",
+      3500,
+    );
+    return;
+  }
+
+  recent = renameRecent(recent, from, dest);
+  saveRecent();
+  if (tab === active) {
+    replaceUrl(viewUrl(dest));
+    // Los enlaces e imágenes relativos se resuelven desde la nueva carpeta.
+    if (!editor) {
+      const y = scrollY;
+      paintView(tab);
+      scrollTo(0, y);
+      invalidateBlocks();
+    }
+  }
+  persistTabs();
+  renderTabs();
+  updateChrome();
+  syncTabState();
+  notify(`Renamed to ${dest}`, "ok", 2500);
+}
+
+async function removeActive(input: string, force: boolean) {
+  const tab = active;
+  if (!tab) {
+    notify("No file to delete", "warn", 2500);
+    return;
+  }
+  if (input.trim() && normalizeNewPath(input) !== tab.path) {
+    notify(":rm only deletes the current file", "warn", 3000);
+    return;
+  }
+  if (!force && !confirm(`Delete "${tab.path}" from disk? This cannot be undone.`)) {
+    editor?.view.focus();
+    return;
+  }
+
+  const path = tab.path;
+  const headers: Record<string, string> = {};
+  if (tab.etag && !force && !tab.conflict) headers["If-Match"] = tab.etag;
+
+  try {
+    await api(fileUrl(path), { method: "DELETE", headers });
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 409 || error.status === 412)) {
+      notify("The file changed on disk. Use :rm! to delete it anyway.", "warn", 0);
+    } else {
+      notify(errorText(error), "error", 3500);
+    }
+    return;
+  }
+
+  recent = removeRecent(recent, path);
+  saveRecent();
+  closeTab(tab, { force: true });
+  notify(`Deleted ${path}`, "ok", 3000);
+}
+
+function runFileCommand(command: FileCommand) {
+  switch (command.name) {
+    case "edit":
+      void openPath(command.arg);
+      return;
+    case "mv":
+      void moveActive(command.arg);
+      return;
+    case "rm":
+      void removeActive(command.arg, command.force);
+      return;
+  }
+}
+
+/**
+ * `:e nombre`: abre el archivo. Sin `.md` ni `/` se busca de forma difusa y solo
+ * si no hay coincidencias se crea; con `.md` o `/` el nombre es exacto.
+ */
+async function openPath(input: string) {
+  const text = input.trim();
+  if (!text) {
     notify("Missing file name", "warn", 2500);
+    return;
+  }
+  if (text === "#") {
+    await alternateFile();
+    return;
+  }
+
+  const path = normalizeNewPath(text);
+  if (!path) {
+    notify("Invalid file name", "warn", 3000);
     return;
   }
 
@@ -761,9 +1088,9 @@ async function openPath(input: string) {
 
   let files: string[];
   try {
-    files = ((await (await api("/api/tree")).json()) as { files: string[] }).files;
+    files = await listFiles();
   } catch (error) {
-    notify(error instanceof Error ? error.message : String(error), "error", 3000);
+    notify(errorText(error), "error", 3000);
     return;
   }
 
@@ -772,29 +1099,44 @@ async function openPath(input: string) {
     return;
   }
 
-  const [best] = fuzzySearch(path, files);
-  if (best) {
-    openInCurrentTab(best.path);
-    return;
+  const exact = text.toLowerCase().endsWith(".md") || text.includes("/");
+  if (!exact) {
+    const [best] = fuzzySearch(path, files);
+    if (best) {
+      openInCurrentTab(best.path);
+      return;
+    }
   }
 
-  notify(`Not found: ${path}`, "error", 3000);
+  await createFile(path, "current");
 }
 
 async function runEx(input: string) {
   const trimmed = input.trim();
   if (!trimmed) return;
 
-  const force = trimmed.endsWith("!");
-  const body = force ? trimmed.slice(0, -1).trim() : trimmed;
-  const [name, ...args] = body.split(/\s+/);
-  const command = (name ?? "").toLowerCase();
-  const argument = args.join(" ");
+  // `!` puede ir pegado al comando (`:rm!`, `:q!`) o al final (`:e nuevo!`).
+  const [head = "", ...args] = trimmed.split(/\s+/);
+  const bang = head.endsWith("!");
+  const command = (bang ? head.slice(0, -1) : head).toLowerCase();
+  const force = bang || trimmed.endsWith("!");
+  let argument = args.join(" ");
+  if (!bang && trimmed.endsWith("!")) argument = argument.slice(0, -1).trim();
 
   switch (command) {
     case "e":
     case "edit":
       await openPath(argument);
+      return;
+    case "mv":
+    case "move":
+    case "rename":
+      await moveActive(argument);
+      return;
+    case "rm":
+    case "delete":
+    case "remove":
+      await removeActive(argument, force);
       return;
     case "q":
     case "quit":
@@ -852,6 +1194,12 @@ function runViewCommand(command: ViewCommand) {
       return;
     case "history":
       goHistory(command.direction);
+      return;
+    case "toggleTask":
+      toggleSelectedTask();
+      return;
+    case "alternate":
+      void alternateFile();
       return;
     case "ex":
       openPrompt("ex");
@@ -1085,6 +1433,12 @@ function updateStatusPosition() {
   }
 
   if (statusPosition.textContent !== text) statusPosition.textContent = text;
+
+  const tasks =
+    !editor && active && editable && taskCounts.total > 0
+      ? `${taskCounts.done}/${taskCounts.total}`
+      : "";
+  setText(statusTasks, tasks);
 }
 
 function paintVimStatus() {
@@ -1271,6 +1625,7 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
     hasChanges: () => tab.dirty,
     onNextTab: () => queueMicrotask(() => switchTab(1)),
     onPreviousTab: () => queueMicrotask(() => switchTab(-1)),
+    onCommand: runFileCommand,
   });
 
   updateReadingIndicator();
@@ -1455,7 +1810,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
 
     // fs.watch también notifica nuestras propias escrituras. Evitar incluso el
     // repintado de la vista/editor cuando el contenido no cambió.
-    if (file.text === tab.raw && !options.discard) {
+    if (file.text === tab.raw && !options.discard && tab.loaded) {
       tab.etag = file.etag;
       if (tab === active) updateChrome();
       return true;
@@ -1464,6 +1819,11 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
     tab.raw = file.text;
     tab.draft = file.text;
     tab.dirty = false;
+    // Sin el ETag nuevo, el siguiente guardado (o marcar una tarea) chocaría.
+    tab.etag = file.etag;
+    tab.loaded = true;
+    tab.error = undefined;
+    tab.conflict = undefined;
 
     if (tab === active) {
       if (editor) {
@@ -1472,7 +1832,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
         editable = true;
         const scroll = scrollY;
         clearSearch();
-        content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+        paintView(tab);
         scrollTo(0, scroll);
         invalidateBlocks();
         updateReadingIndicator();
@@ -1799,12 +2159,15 @@ async function showTab(tab: Tab, scroll?: number) {
   }
 
   editable = true;
+  visit(tab.path);
+  const jump = takeJump(tab.path);
   if (tab.mode === "edit") {
+    if (jump) tab.cursor = cursorForLine(tab.draft, jump);
     enterEditor(tab);
     return;
   }
 
-  content.replaceChildren(renderMarkdown(tab.draft, tab.path));
+  paintView(tab);
   clearSearch();
   updateChrome();
   renderTabs();
@@ -1815,6 +2178,7 @@ async function showTab(tab: Tab, scroll?: number) {
   invalidateBlocks();
   readingCursorState.clear();
   updateReadingIndicator();
+  if (jump) scrollToSourceLine(jump);
 }
 
 function switchTo(tab: Tab, url: URL | string = viewUrl(tab.path)) {
@@ -2063,15 +2427,41 @@ function connectEvents() {
 }
 
 const finder = createFinder({
+  list: listFiles,
+  read: readText,
+  open(path) {
+    openInNewTab(path);
+  },
+  // Sin coincidencias, `Enter` crea el archivo con lo escrito.
+  create(path) {
+    void createFile(path, "new");
+  },
+});
+
+const recents = createFinder({
   async list() {
-    const response = await api("/api/tree");
-    return ((await response.json()) as { files: string[] }).files;
+    return recentChoices(recent, await listFiles(), active?.path);
   },
   read: readText,
   open(path) {
     openInNewTab(path);
   },
+  title: "Recent files",
+  placeholder: "Recent files…",
+  listLabel: "Recent files",
+  emptyText: "No recent files.",
 });
+
+const grep = createGrep({
+  async search(query, signal) {
+    const response = await api(`/api/search?q=${encodeURIComponent(query)}`, { signal });
+    return (await response.json()) as Awaited<ReturnType<Parameters<typeof createGrep>[0]["search"]>>;
+  },
+  read: readText,
+  open: jumpTo,
+});
+
+const anyModalOpen = () => finder.isOpen || recents.isOpen || grep.isOpen || toc.isOpen;
 
 const toc = createSelector<Heading>({
   title: "Table of contents",
@@ -2195,6 +2585,9 @@ function scheduleWhichKey() {
 const leader = createLeader(
   [
     { keys: ["f"], label: "Find file", run: () => finder.open() },
+    { keys: ["/"], label: "Search text", run: () => grep.open() },
+    { keys: ["r"], label: "Recent files", run: () => recents.open() },
+    { keys: ["a"], label: "Alternate file", run: () => void alternateFile() },
     {
       keys: ["t"],
       label: "Table of contents",
@@ -2258,6 +2651,8 @@ content.addEventListener("dblclick", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   // Un enlace ya navega con el primer clic; no se abre el editor encima.
   if (target?.closest("a[href]")) return;
+  // Las casillas ya reaccionan al clic: el doble clic no abre el editor.
+  if (taskBoxOf(target)) return;
   const line = lineAtPoint(target, event.clientY);
   if (line === undefined) return;
 
@@ -2267,6 +2662,23 @@ content.addEventListener("dblclick", (event) => {
     cursor: cursorForLine(active.draft, line),
     screenY: event.clientY,
   });
+});
+
+// Casillas de tareas. Sin foco (mousedown cancelado) para que las teclas de la
+// vista sigan funcionando; el clic escribe el cambio en el archivo.
+content.addEventListener("mousedown", (event) => {
+  if (taskBoxOf(event.target)) event.preventDefault();
+});
+
+content.addEventListener("click", (event) => {
+  const box = taskBoxOf(event.target);
+  if (!box) return;
+  const item = box.closest<HTMLElement>("li.task");
+  if (!item || editor || !active || !editable) {
+    event.preventDefault();
+    return;
+  }
+  void commitTask(item);
 });
 
 // Clic simple: sitúa el marcador de lectura en esa línea y desplaza la vista si
@@ -2282,6 +2694,7 @@ content.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   // Los enlaces navegan con el primer clic; no reasignamos el marcador.
   if (target?.closest("a[href]")) return;
+  if (taskBoxOf(target)) return;
   // Una selección en curso anula el click: el usuario está arrastrando texto.
   const selection = window.getSelection();
   if (selection && !selection.isCollapsed) return;
@@ -2336,6 +2749,20 @@ document.addEventListener(
     if (!(target instanceof Node) || !editor.view.dom.contains(target)) return;
     if (target instanceof Element && target.closest(".cm-vim-panel")) return;
 
+    if (
+      !leader.active &&
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      (event.key === "^" || event.key === "6") &&
+      editor.vimStatus().mode === "normal"
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void alternateFile();
+      return;
+    }
+
     if (leader.active) {
       if (isModifierKey(event.key)) return;
       event.preventDefault();
@@ -2358,7 +2785,7 @@ document.addEventListener(
 
 document.addEventListener("keydown", (event) => {
   if (event.isComposing) return;
-  if (finder.isOpen || toc.isOpen || promptMode || hints) return;
+  if (anyModalOpen() || promptMode || hints) return;
 
   const target = event.target;
   const inEditor = editor?.view.dom.contains(target as Node) ?? false;

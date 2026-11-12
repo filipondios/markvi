@@ -1,4 +1,14 @@
-import { HttpError, isMarkdown, listMarkdown, resolveFile, resolveWritable } from "./files.ts";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+  HttpError,
+  isMarkdown,
+  listMarkdown,
+  resolveFile,
+  resolveNew,
+  resolveWritable,
+} from "./files.ts";
+import { searchMarkdown } from "./search.ts";
 import type { DiskEvent, FileWatcher } from "./watch.ts";
 
 type Handler = (req: Request) => Response | Promise<Response>;
@@ -15,6 +25,7 @@ const RAW_HEADERS = {
 
 const FILES_PREFIX = "/files/";
 const HEARTBEAT_MS = 25_000;
+const MAX_QUERY = 200;
 
 // Identifica el contenido que el cliente leyó. No es criptográfico: solo sirve
 // para detectar que el archivo cambió entre la lectura y el guardado.
@@ -23,12 +34,19 @@ const etagFor = (content: string) => `"${Bun.hash(content).toString(16)}"`;
 export function createRoutes(root: string, port: number, watcher: FileWatcher) {
   const suffix = port === 80 ? "" : `:${port}`;
   const hosts = new Set([`127.0.0.1${suffix}`, `localhost${suffix}`]);
+  const origins = new Set([`http://127.0.0.1${suffix}`, `http://localhost${suffix}`]);
 
   // Comprobar Host evita ataques de DNS rebinding desde otras webs.
   const guard = (handler: Handler): Handler => async (req) => {
     try {
       if (!hosts.has(req.headers.get("host") ?? "")) {
         throw new HttpError(403, "Host not allowed.");
+      }
+      // Las escrituras solo valen desde esta misma app: una web ajena puede
+      // lanzar un POST «simple» a 127.0.0.1 sin que el navegador lo bloquee.
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        const origin = req.headers.get("origin");
+        if (origin && !origins.has(origin)) throw new HttpError(403, "Origin not allowed.");
       }
       return await handler(req);
     } catch (error) {
@@ -44,6 +62,8 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
             ? [403, "No permission to access the file."]
             : code === "EISDIR"
               ? [400, "The path is not a file."]
+              : code === "EEXIST"
+                ? [409, "A file or folder already exists at that path."]
               : code === "ENOSPC"
                 ? [507, "No space left on disk."]
                 : null;
@@ -170,6 +190,65 @@ export function createRoutes(root: string, port: number, watcher: FileWatcher) {
           status: 204,
           headers: { ...NO_STORE, ETag: etagFor(body) },
         });
+      }),
+      // Crea un archivo nuevo (y sus carpetas). Nunca sobrescribe: si existe, 409.
+      POST: guard(async (req) => {
+        const path = new URL(req.url).searchParams.get("path");
+        if (!path || !isMarkdown(path)) throw new HttpError(400, "Only .md files are supported.");
+        const file = await resolveNew(root, path);
+        const body = await req.text();
+
+        await mkdir(dirname(file), { recursive: true });
+        await writeFile(file, body, { flag: "wx" });
+        return new Response(null, {
+          status: 201,
+          headers: { ...NO_STORE, ETag: etagFor(body) },
+        });
+      }),
+      DELETE: guard(async (req) => {
+        const file = await markdownFile(req);
+
+        const ifMatch = req.headers.get("if-match");
+        if (ifMatch && ifMatch !== "*") {
+          const etag = etagFor(await Bun.file(file).text());
+          if (ifMatch !== etag) {
+            return Response.json(
+              { error: "The file changed on disk.", etag },
+              { status: 409, headers: NO_STORE },
+            );
+          }
+        }
+
+        await unlink(file);
+        return new Response(null, { status: 204, headers: NO_STORE });
+      }),
+    },
+    // Renombra o mueve un archivo. El destino no puede existir.
+    "/api/move": {
+      POST: guard(async (req) => {
+        const body = (await req.json().catch(() => null)) as { from?: unknown; to?: unknown } | null;
+        const from = body?.from;
+        const to = body?.to;
+        if (typeof from !== "string" || typeof to !== "string") {
+          throw new HttpError(400, "Missing or invalid path.");
+        }
+        if (!isMarkdown(from) || !isMarkdown(to)) {
+          throw new HttpError(400, "Only .md files are supported.");
+        }
+
+        const source = await resolveFile(root, from);
+        const target = await resolveNew(root, to);
+        await mkdir(dirname(target), { recursive: true });
+        await rename(source, target);
+        return new Response(null, { status: 204, headers: NO_STORE });
+      }),
+    },
+    // Búsqueda de texto en todos los archivos Markdown (live grep).
+    "/api/search": {
+      GET: guard(async (req) => {
+        const query = (new URL(req.url).searchParams.get("q") ?? "").trim();
+        if (query.length > MAX_QUERY) throw new HttpError(400, "The query is too long.");
+        return Response.json(await searchMarkdown(root, query), { headers: NO_STORE });
       }),
     },
     "/api/events": {

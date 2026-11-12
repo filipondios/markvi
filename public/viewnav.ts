@@ -22,6 +22,8 @@ export type ViewCommand =
   | { type: "hints" }
   | { type: "tab"; direction: 1 | -1; count?: number }
   | { type: "history"; direction: 1 | -1 }
+  | { type: "toggleTask" }
+  | { type: "alternate" }
   | { type: "ex" }
   | { type: "cancel" };
 
@@ -65,6 +67,10 @@ export function createViewNav(): ViewNav {
             return { type: "history", direction: -1 };
           case "i":
             return { type: "history", direction: 1 };
+          // Como en Vim, `Ctrl-^` y `Ctrl-6` saltan al archivo anterior.
+          case "^":
+          case "6":
+            return { type: "alternate" };
           default:
             return undefined;
         }
@@ -132,6 +138,9 @@ export function createViewNav(): ViewNav {
         case "f":
           reset();
           return { type: "hints" };
+        case "x":
+          reset();
+          return { type: "toggleTask" };
         case ":":
           reset();
           return { type: "ex" };

@@ -36,9 +36,20 @@ export interface EditorOptions {
   /** Cambiar de pestaña desde modo Normal (`gt` / `gT`). */
   onNextTab?: () => void;
   onPreviousTab?: () => void;
+  /** Comandos ex de archivos (`:e`, `:mv`, `:rm`): los resuelve la aplicación. */
+  onCommand?: (command: FileCommand) => void;
+}
+
+export interface FileCommand {
+  name: "edit" | "mv" | "rm";
+  /** Argumento sin el `!` inicial ni espacios. */
+  arg: string;
+  /** Se escribió `!` (p. ej. `:rm!`, `:e! nuevo`). */
+  force: boolean;
 }
 
 interface SessionControls {
+  command(command: FileCommand): void;
   save(): Promise<boolean> | boolean;
   exit(options?: EditorExitOptions): void | Promise<void>;
   message(message: string): void;
@@ -123,6 +134,22 @@ Vim.map("ZQ", ":q!<CR>", "normal");
 
 // `gt` / `gT` cambian de pestaña también desde modo Normal. Los comandos ex
 // son globales y llaman a la sesión activa.
+// Comandos de archivos: el editor solo los reenvía a la aplicación, que sabe
+// de rutas, pestañas y confirmaciones.
+function defineFileCommand(name: FileCommand["name"], full: string, short?: string) {
+  Vim.defineEx(full, short, (_cm, params) => {
+    const raw = (params.argString ?? "").trim();
+    const force = raw.startsWith("!");
+    const arg = (force ? raw.slice(1) : raw).trim();
+    const command: FileCommand = { name, arg, force };
+    // Se aplaza: la librería sigue usando el editor al cerrar el prompt `:`.
+    queueMicrotask(() => active?.command(command));
+  });
+}
+defineFileCommand("edit", "edit", "e");
+defineFileCommand("mv", "mv");
+defineFileCommand("rm", "rm");
+
 Vim.defineEx("tabnext", "tabn", () => active?.nextTab());
 Vim.defineEx("tabprevious", "tabp", () => active?.previousTab());
 Vim.map("gt", ":tabnext<CR>", "normal");
@@ -218,6 +245,7 @@ export function createEditor(
     exit: options.onExit,
     message: options.onMessage,
     hasChanges: options.hasChanges,
+    command: options.onCommand ?? (() => {}),
     nextTab: options.onNextTab ?? (() => {}),
     previousTab: options.onPreviousTab ?? (() => {}),
     setNumber(value) {

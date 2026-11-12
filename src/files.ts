@@ -105,3 +105,42 @@ export async function resolveWritable(root: string, path: string | null): Promis
 
   return join(parent, basename(target));
 }
+
+// Para crear o mover un archivo: la ruta destino no debe existir y debe quedar
+// dentro del raíz. Las carpetas intermedias pueden no existir todavía (las crea
+// el llamador). El ancestro existente más profundo se resuelve con `realpath`
+// para que un enlace simbólico no pueda sacar el archivo del raíz; las carpetas
+// que aún no existen no pueden ser enlaces.
+export async function resolveNew(root: string, path: string | null): Promise<string> {
+  if (!path || path.includes("\0")) throw new HttpError(400, "Missing or invalid path.");
+
+  const target = resolve(root, path);
+  const segments = segmentsInside(root, target);
+  if (!segments) throw new HttpError(403, "Path outside the root directory.");
+  if (segments.some(isIgnored)) {
+    throw new HttpError(400, "Hidden files and folders are not allowed.");
+  }
+
+  let ancestor = dirname(target);
+  for (;;) {
+    const real = await realpath(ancestor).catch(() => null);
+    if (real) {
+      if (real !== root) {
+        const inside = segmentsInside(root, real);
+        if (!inside || inside.some(isIgnored)) {
+          throw new HttpError(403, "Path outside the root directory.");
+        }
+      }
+      break;
+    }
+    const parent = dirname(ancestor);
+    if (parent === ancestor) throw new HttpError(404, "The file's folder does not exist.");
+    ancestor = parent;
+  }
+
+  // `lstat` también detecta un symlink roto en esa ruta.
+  if (await lstat(target).catch(() => null)) {
+    throw new HttpError(409, "A file already exists at that path.");
+  }
+  return target;
+}

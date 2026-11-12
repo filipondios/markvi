@@ -7,7 +7,7 @@ import { createFileWatcher } from "./src/watch.ts";
 
 const command =
   Bun.argv[1] && !Bun.argv[1].endsWith(".ts") ? basename(Bun.argv[1]) : "bun run server.ts";
-const USAGE = `Uso: ${command} <directorio> [--port <puerto>]`;
+const USAGE = `Usage: ${command} <directory> [--port <port>]`;
 const HOSTNAME = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 
@@ -30,13 +30,13 @@ function readArgs() {
 
 async function resolveRoot(positionals: string[]) {
   const [dir, ...rest] = positionals;
-  if (!dir) fail("falta la ruta del directorio a explorar.");
-  if (rest.length > 0) fail("solo se admite un directorio.");
+  if (!dir) fail("missing path of the directory to browse.");
+  if (rest.length > 0) fail("only one directory is supported.");
 
   const root = resolve(dir);
   const info = await stat(root).catch(() => null);
-  if (!info) fail(`la ruta no existe: ${root}`);
-  if (!info.isDirectory()) fail(`la ruta no es un directorio: ${root}`);
+  if (!info) fail(`path does not exist: ${root}`);
+  if (!info.isDirectory()) fail(`path is not a directory: ${root}`);
   return realpath(root);
 }
 
@@ -44,7 +44,7 @@ function resolvePort(value: string | undefined) {
   if (value === undefined) return DEFAULT_PORT;
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    fail(`puerto no válido: ${value}`);
+    fail(`invalid port: ${value}`);
   }
   return port;
 }
@@ -71,12 +71,12 @@ function startServer() {
         ...createRoutes(root, port, watcher),
       },
       fetch() {
-        return new Response("No encontrado", { status: 404 });
+        return new Response("Not found", { status: 404 });
       },
     });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
-      fail(`el puerto ${port} ya está en uso. Prueba con --port.`);
+      fail(`port ${port} is already in use. Try --port.`);
     }
     throw error;
   }
@@ -92,5 +92,5 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
-console.log(`markvi sirviendo ${root}`);
-console.log(`→ ${server.url}`);
+console.log(`markvi serving ${root}`);
+console.log(`${server.url}`);

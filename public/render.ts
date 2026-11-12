@@ -57,7 +57,16 @@ function addLineAttributes(html: string, token: LineToken): string {
   );
 }
 
-export function renderMarkdown(source: string, path: string): DocumentFragment {
+export interface RenderOptions {
+  /** Las casillas de tarea se pueden marcar. Solo la vista principal; las previews son inertes. */
+  interactive?: boolean;
+}
+
+export function renderMarkdown(
+  source: string,
+  path: string,
+  options: RenderOptions = {},
+): DocumentFragment {
   // Se lexa una sola vez para anotar las líneas antes de renderizar. El hook de
   // marked-highlight también se ejecuta a mano porque no pasamos por `parse`.
   const tokens = marked.lexer(source);
@@ -71,7 +80,7 @@ export function renderMarkdown(source: string, path: string): DocumentFragment {
   template.innerHTML = DOMPurify.sanitize(marked.parser(tokens));
   const content = template.content;
   rewriteUrls(content, path);
-  markTaskItems(content);
+  markTaskItems(content, options.interactive === true);
   addHeadingIds(content);
   return content;
 }
@@ -110,9 +119,14 @@ function rewriteUrls(content: DocumentFragment, path: string) {
   }
 }
 
-function markTaskItems(content: DocumentFragment) {
-  for (const box of content.querySelectorAll('li input[type="checkbox"]')) {
+function markTaskItems(content: DocumentFragment, interactive: boolean) {
+  for (const box of content.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')) {
     box.closest("li")?.classList.add("task");
+    if (!interactive) continue;
+    box.removeAttribute("disabled");
+    // Fuera del orden de tabulación: un clic no debe dejar el foco en la casilla,
+    // porque con el foco en un <input> las teclas de la vista (j, k, x…) se ignoran.
+    box.tabIndex = -1;
   }
 }
 

@@ -545,6 +545,17 @@ a:hover {
   color: var(--error);
 }
 
+#status-tasks {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#status-tasks:empty {
+  display: none;
+}
+
 #status-position {
   flex: 0 0 auto;
   min-width: 11ch;
@@ -873,6 +884,46 @@ body.finder-open {
   font-weight: 500;
 }
 
+/* Fila «crear archivo» del buscador. */
+.finder-create {
+  flex: 0 0 auto;
+  margin-right: 0.5rem;
+  padding: 0 0.4rem;
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 4px;
+}
+
+/* Resultados de la búsqueda de texto. */
+.grep-row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.grep-loc {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+}
+
+.grep-text {
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+}
+
+.finder-hit {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: -0.5rem 0 0 color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 4px;
+}
+
 .finder-match {
   color: var(--accent);
   font-weight: 700;
@@ -906,6 +957,10 @@ body.finder-open {
 
 .finder-body-single {
   grid-template-columns: 1fr;
+}
+
+.finder-body-wide {
+  grid-template-columns: minmax(20rem, 3fr) minmax(0, 2fr);
 }
 
 .finder-preview {
@@ -1013,6 +1068,11 @@ li.task {
 li.task input[type="checkbox"] {
   margin: 0 0.5em 0 -1.5em;
   vertical-align: middle;
+}
+
+/* Casillas activas de la vista (en el preview del buscador siguen deshabilitadas). */
+li.task input[type="checkbox"]:not(:disabled) {
+  cursor: pointer;
 }
 
 blockquote {
@@ -1161,6 +1221,7 @@ pre code {
 @media (max-width: 40rem) {
   #status-path,
   #status-state,
+  #status-tasks,
   #status-position {
     display: none;
   }

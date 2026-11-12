@@ -112,3 +112,26 @@ test("AltGr no se confunde con Ctrl ni Alt", () => {
     count: 1,
   });
 });
+
+test("x alterna la tarea bajo el cursor y descarta el contador pendiente", () => {
+  const nav = createViewNav();
+  expect(nav.handle({ key: "x" })).toEqual({ type: "toggleTask" });
+  expect(press(nav, "3", "x")).toEqual([undefined, { type: "toggleTask" }]);
+  expect(nav.pending).toBe("");
+});
+
+test("x tras un prefijo pendiente no alterna nada", () => {
+  const nav = createViewNav();
+  expect(press(nav, "g", "x")).toEqual([undefined, undefined]);
+  expect(nav.pending).toBe("");
+});
+
+test("Ctrl-^ y Ctrl-6 piden el archivo alternativo", () => {
+  const nav = createViewNav();
+  expect(nav.handle({ key: "^", ctrl: true })).toEqual({ type: "alternate" });
+  expect(nav.handle({ key: "6", ctrl: true })).toEqual({ type: "alternate" });
+  // Sin Ctrl son teclas normales: `6` es un contador y `^` no hace nada.
+  expect(nav.handle({ key: "^" })).toBeUndefined();
+  expect(nav.handle({ key: "6" })).toBeUndefined();
+  expect(nav.pending).toBe("6");
+});
