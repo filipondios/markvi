@@ -47,6 +47,17 @@ export interface Config {
   viewRemap: Record<string, string>;
   /** Mapeos del editor (`Vim.map`). */
   vimMappings: VimMapping[];
+  /** Extras de render opcionales, activados por omisión. */
+  render: RenderExtras;
+}
+
+export interface RenderExtras {
+  /** Notas al pie GFM (`[^1]` → referencia y sección de notas). */
+  footnotes: boolean;
+  /** Alertas de GitHub (`> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`). */
+  alerts: boolean;
+  /** Front matter YAML inicial (`--- … ---`): se separa y no se renderiza. */
+  frontmatter: boolean;
 }
 
 export interface LoadedConfig {
@@ -78,5 +89,6 @@ export function defaultConfig(): Config {
     })),
     viewRemap: {},
     vimMappings: [],
+    render: { footnotes: true, alerts: true, frontmatter: true },
   };
 }

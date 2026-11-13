@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import { Marked } from "marked";
+import markedFootnote from "marked-footnote";
 import { markedHighlight } from "marked-highlight";
 import {
   createWikiIndex,
@@ -11,7 +12,11 @@ import {
   wikiStartRegExp,
   type WikiIndex,
 } from "../src/wiki.ts";
-import { annotateTokenLines, type LineToken } from "./lines.ts";
+import {
+  annotateTokenLines,
+  splitFrontMatter,
+  type LineToken,
+} from "./lines.ts";
 import { normalizeNewPath } from "./newfile.ts";
 
 export const VIEW_PREFIX = "/view/";
@@ -103,6 +108,25 @@ export function setWikiFiles(files: readonly string[]) {
   wikiIndex = createWikiIndex(files);
 }
 
+// Extras de render (config.toml → app.ts). Como las extensiones de marked no se
+// pueden desregistrar, la de notas al pie solo se activa una vez.
+export interface RenderExtrasOptions {
+  footnotes: boolean;
+  alerts: boolean;
+  frontmatter: boolean;
+}
+
+let extras: RenderExtrasOptions = { footnotes: false, alerts: true, frontmatter: true };
+let footnotesRegistered = false;
+
+export function setRenderOptions(options: RenderExtrasOptions) {
+  extras = options;
+  if (options.footnotes && !footnotesRegistered) {
+    marked.use(markedFootnote());
+    footnotesRegistered = true;
+  }
+}
+
 function addLineAttributes(html: string, token: LineToken): string {
   if (token.line === undefined) return html;
   const endLine = token.endLine ?? token.line;
@@ -124,7 +148,10 @@ export function renderMarkdown(
 ): DocumentFragment {
   // Se lexa una sola vez para anotar las líneas antes de renderizar. El hook de
   // marked-highlight también se ejecuta a mano porque no pasamos por `parse`.
-  const tokens = marked.lexer(source);
+  // El front matter se quita solo para el lexer: las líneas se anotan contra el
+  // texto original, así que la sincronía con el editor no se desplaza.
+  const body = extras.frontmatter ? splitFrontMatter(source) : source;
+  const tokens = marked.lexer(body);
   const walk = marked.defaults.walkTokens;
   if (walk) marked.walkTokens(tokens, walk);
   annotateTokenLines(tokens as unknown as LineToken[], source);
@@ -138,7 +165,38 @@ export function renderMarkdown(
   refreshWikiLinks(content, path);
   markTaskItems(content, options.interactive === true);
   addHeadingIds(content);
+  if (extras.alerts) markAlerts(content);
   return content;
+}
+
+/** Título visible de cada alerta de GitHub. */
+const ALERT_TITLES = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
+} as const;
+
+/**
+ * Convierte las citas que empiezan por `> [!NOTE]` en alertas: quita la línea
+ * del marcador y marca la cita con su tipo. Debe correr sobre el DOM limpio.
+ */
+function markAlerts(content: DocumentFragment) {
+  for (const quote of content.querySelectorAll("blockquote")) {
+    const first = quote.firstElementChild;
+    if (!first || first.tagName !== "P") continue;
+    const node = first.firstChild;
+    const match = node?.nodeType === Node.TEXT_NODE &&
+      /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i.exec(node.nodeValue ?? "");
+    if (!match) continue;
+
+    node.nodeValue = node.nodeValue!.slice(match[0].length);
+    if (!first.textContent?.trim()) first.remove();
+    const type = match[1]!.toLowerCase() as keyof typeof ALERT_TITLES;
+    quote.classList.add("alert", `alert-${type}`);
+    quote.dataset.alert = ALERT_TITLES[type];
+  }
 }
 
 function resolveUrl(value: string, base: URL) {

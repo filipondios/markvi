@@ -16,6 +16,7 @@ import {
   type Config,
   type LeaderBinding,
   type LoadedConfig,
+  type RenderExtras,
   type VimContext,
 } from "./configdefaults.ts";
 
@@ -102,7 +103,7 @@ export function validateConfig(raw: unknown): { config: Config; warnings: string
     return { config, warnings };
   }
 
-  const known = new Set(["leader", "theme", "font", "editor", "keymap"]);
+  const known = new Set(["leader", "theme", "font", "editor", "keymap", "render"]);
   for (const key of Object.keys(raw)) {
     if (!known.has(key)) warn(`Unknown key "${key}".`);
   }
@@ -151,6 +152,24 @@ export function validateConfig(raw: unknown): { config: Config; warnings: string
           }
         } else {
           warn(`Unknown key "editor.${key}".`);
+        }
+      }
+    }
+  }
+
+  // --- [render] -------------------------------------------------------------
+  const RENDER_EXTRAS = ["footnotes", "alerts", "frontmatter"] as const;
+  if (raw.render !== undefined) {
+    if (!isTable(raw.render)) {
+      warn(`"render" must be a table.`);
+    } else {
+      for (const [key, value] of Object.entries(raw.render)) {
+        if (!(RENDER_EXTRAS as readonly string[]).includes(key)) {
+          warn(`Unknown key "render.${key}".`);
+        } else if (typeof value !== "boolean") {
+          warn(`"render.${key}" must be true or false.`);
+        } else {
+          config.render[key as keyof RenderExtras] = value;
         }
       }
     }

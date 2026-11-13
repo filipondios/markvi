@@ -48,6 +48,28 @@ test("lee tema, fuente, líder y opciones del editor", () => {
   expect(config.editor).toEqual({ number: false, relativenumber: true, scrolloff: 5 });
 });
 
+test("[render] activa y desactiva los extras; lo no válido avisa", () => {
+  const { config, warnings } = parseConfig(`
+    [render]
+    footnotes = false
+    alerts = false
+    frontmatter = false
+  `);
+  expect(warnings).toEqual([]);
+  expect(config.render).toEqual({ footnotes: false, alerts: false, frontmatter: false });
+
+  const bad = parseConfig(`
+    [render]
+    footnotes = "no"
+    blur = 1
+  `);
+  expect(bad.warnings).toHaveLength(2);
+  expect(bad.warnings.join("\n")).toContain('"render.blur"');
+  expect(bad.config.render).toEqual(defaultConfig().render);
+
+  expect(parseConfig("render = 1").warnings).toContain('"render" must be a table.');
+});
+
 test('"space" es la barra espaciadora y las letras no sirven de líder', () => {
   expect(parseConfig('leader = "space"').config.leader).toBe(" ");
 

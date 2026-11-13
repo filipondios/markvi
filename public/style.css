@@ -1151,6 +1151,62 @@ blockquote > :last-child {
   margin-bottom: 0;
 }
 
+/* Alertas de GitHub (> [!NOTE], TIP, IMPORTANT, WARNING, CAUTION). */
+blockquote.alert {
+  padding: 0.5em 1em;
+  color: var(--fg);
+  border-left: 0.25em solid var(--accent);
+}
+
+blockquote.alert::before {
+  content: attr(data-alert);
+  display: block;
+  margin-bottom: 0.25em;
+  font-weight: 600;
+}
+
+blockquote.alert-tip {
+  border-left-color: var(--ok);
+}
+
+blockquote.alert-important {
+  border-left-color: var(--mode-visual);
+}
+
+blockquote.alert-warning {
+  border-left-color: var(--warn);
+}
+
+blockquote.alert-caution {
+  border-left-color: var(--error);
+}
+
+/* Notas al pie. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+section[data-footnotes] {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--border);
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+section[data-footnotes] p {
+  margin-bottom: 0.25em;
+}
+
+section[data-footnotes] a {
+  color: var(--link);
+}
+
 hr {
   height: 1px;
   margin: 2em 0;

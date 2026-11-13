@@ -3,7 +3,7 @@
 // están dentro de bloques de código e incluye los encabezados setext.
 
 import { Marked } from "marked";
-import { annotateTokenLines, type LineToken } from "./lines.ts";
+import { annotateTokenLines, splitFrontMatter, type LineToken } from "./lines.ts";
 
 export interface Heading {
   level: number;
@@ -18,8 +18,10 @@ type HeadingToken = LineToken & { depth?: number; text?: string };
 
 const marked = new Marked();
 
-export function extractHeadings(source: string): Heading[] {
-  const tokens = marked.lexer(source) as unknown as HeadingToken[];
+export function extractHeadings(source: string, stripFrontMatter = true): Heading[] {
+  const tokens = marked.lexer(
+    stripFrontMatter ? splitFrontMatter(source) : source,
+  ) as unknown as HeadingToken[];
   annotateTokenLines(tokens, source);
 
   const headings: Heading[] = [];

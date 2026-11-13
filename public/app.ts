@@ -36,6 +36,7 @@ import {
 import {
   refreshWikiLinks,
   renderMarkdown,
+  setRenderOptions,
   setWikiFiles,
   viewUrl,
   VIEW_PREFIX,
@@ -74,6 +75,7 @@ const config = loadedConfig.config;
 const configWarnings = [...loadedConfig.warnings];
 applyAppearance(config);
 setEditorDefaults(config.editor);
+setRenderOptions(config.render);
 configWarnings.push(...applyVimMappings(config.vimMappings));
 
 /** ¿Es esta la tecla líder? (AltGr cuenta como Ctrl+Alt: no se descarta.) */
@@ -2566,7 +2568,7 @@ const toc = createSelector<Heading>({
   items() {
     if (!active) return [];
     const source = editor ? editor.view.state.doc.toString() : active.draft;
-    return extractHeadings(source).map((heading) => ({
+    return extractHeadings(source, config.render.frontmatter).map((heading) => ({
       key: String(heading.line),
       label: heading.text,
       data: heading,

@@ -7,6 +7,7 @@ import {
   lineStarts,
   pickBlockIndex,
   sourceLineAt,
+  splitFrontMatter,
   type LineToken,
 } from "./lines.ts";
 
@@ -147,6 +148,17 @@ test("cuenta las líneas de un front matter antes del contenido", () => {
   expect([heading?.line, heading?.endLine]).toEqual([5, 5]);
   const paragraph = tokens.find((token) => token.type === "paragraph");
   expect([paragraph?.line, paragraph?.endLine]).toEqual([7, 7]);
+});
+
+test("splitFrontMatter: quita el bloque y respeta los casos límite", () => {
+  expect(splitFrontMatter("---\ntitle: A\n---\n# T\n")).toBe("# T\n");
+  expect(splitFrontMatter("---\r\ntitle: A\r\n---\r\n# T\r\n")).toBe("# T\r\n");
+  expect(splitFrontMatter("---\ntitle: A\n...\n# T\n")).toBe("# T\n");
+  expect(splitFrontMatter("---\ntitle: A\n---\n")).toBe("");
+  // Sin cierre, o con algo antes del `---`: es una línea horizontal.
+  expect(splitFrontMatter("---\ntitle: A\n")).toBe("---\ntitle: A\n");
+  expect(splitFrontMatter("Texto\n\n---\n---\n")).toBe("Texto\n\n---\n---\n");
+  expect(splitFrontMatter("---\nA\n---\n---\n")).toBe("---\n");
 });
 
 test("anota listas y citas con finales de línea CRLF", () => {

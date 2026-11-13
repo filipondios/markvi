@@ -100,6 +100,19 @@ function setRange(token: LineToken, start: number, starts: readonly number[]): v
 }
 
 /**
+ * Quita el front matter YAML inicial (`---` … `---` o `...`). Devuelve el texto
+ * íntegro cuando no hay delimitador de apertura o falta el de cierre: entonces
+ * el `---` inicial es simplemente una línea horizontal.
+ */
+export function splitFrontMatter(source: string): string {
+  const open = /^---[ \t]*\r?\n/.exec(source);
+  if (!open || open.index !== 0) return source;
+  const close = /^(?:---|\.\.\.)[ \t]*\r?\n/m.exec(source.slice(open[0].length));
+  if (!close) return source;
+  return source.slice(open[0].length + close.index + close[0].length);
+}
+
+/**
  * Índice del último bloque cuyo inicio queda por encima de `y`. Los bloques
  * anidados van después de su contenedor, así que el más específico gana.
  */
