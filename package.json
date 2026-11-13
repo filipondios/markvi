@@ -7,10 +7,12 @@
     "start": "bun run server.ts",
     "build": "bun build --compile ./server.ts --outfile dist/markvi",
     "test": "bun test",
-    "typecheck": "bun check"
+    "typecheck": "bun check",
+    "demo": "bun run scripts/demo.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "playwright": "^1.63.0"
   },
   "peerDependencies": {
     "typescript": "^7"
