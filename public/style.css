@@ -454,6 +454,45 @@ a.wikilink.missing {
   text-decoration: none;
 }
 
+/* Foco de navegación (j/k) y ruta de la carpeta en gris. */
+.files a.focused {
+  background: var(--surface-sunken);
+  outline: 1px solid var(--border-strong);
+}
+
+.index-dir {
+  color: var(--faint);
+}
+
+/* Barra del filtro difuso (/). */
+.index-filter {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.6rem 0 0;
+  color: var(--faint);
+}
+
+.index-filter[hidden] {
+  display: none;
+}
+
+.index-filter input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.index-filter input:focus {
+  border-color: var(--border-strong);
+  outline: 1px solid var(--border-strong);
+}
+
 /* Estados de carga, error y conflicto. */
 .state {
   max-width: 32rem;

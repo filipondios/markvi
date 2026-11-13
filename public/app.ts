@@ -11,6 +11,10 @@ import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
 import { applyAppearance, isDark, keyLabel, loadClientConfig } from "./config.ts";
 import { createGrep } from "./grep.ts";
+import { createDocs } from "./index/model.ts";
+import { createIndexState, reconcileIndexState } from "./index/state.ts";
+import { createIndexList, type IndexList, type ListEntry } from "./index/list.ts";
+import { createListNav, type ListCommand } from "./index/navigation.ts";
 import { hintLabels } from "./hints.ts";
 import { createLeader, isModifierKey } from "./keys.ts";
 import {
@@ -125,6 +129,11 @@ const RECENT_KEY = "markvi:recent";
 
 // Archivos visitados, el más reciente primero (para `space + r` y `Ctrl-^`).
 let recent = loadRecent();
+// Estado compartido de la portada (vista, selección, foco, filtro, expansión)
+// y sus piezas: máquina de teclado y vista de lista.
+let indexState = createIndexState();
+const listNav = createListNav();
+let indexList: IndexList | null = null;
 // Casillas de la vista renderizada: marcadas / total.
 let taskCounts = { done: 0, total: 0 };
 
@@ -1535,7 +1544,10 @@ function renderStatus() {
   const mode = editor ? editor.vimStatus().mode : tab ? "view" : "index";
   setText(statusMode, editor ? vimModeLabel(mode) : tab ? "View" : "Index");
   if (statusMode.dataset.mode !== mode) statusMode.dataset.mode = mode;
-  setText(statusVim, editor ? vimStatusText(editor.vimStatus()) : viewNav.pending);
+  setText(
+    statusVim,
+    editor ? vimStatusText(editor.vimStatus()) : !active ? listNav.pending : viewNav.pending,
+  );
   setText(statusPath, tab ? tab.path : "");
   statusDirty.hidden = !tab?.dirty;
 
@@ -2040,62 +2052,35 @@ function renderErrorState(
   return wrapper;
 }
 
-function buildIndex(files: string[]) {
-  const wrapper = element("div", "", "index");
-  const header = element("div", "", "index-header");
-  header.append(element("h1", "Files"));
-  header.append(
-    element("p", "space + f find · space + t index · Enter open", "index-hint"),
-  );
-  wrapper.append(header);
+/** Entradas de la lista: pestañas abiertas como recientes + todos los documentos. */
+function indexEntries(files: readonly string[]): ListEntry[] {
+  const entries: ListEntry[] = tabs.map((tab) => ({ path: tab.path, recent: true }));
+  for (const doc of createDocs(files)) entries.push({ path: doc.path });
+  return entries;
+}
 
-  if (files.length === 0) {
-    wrapper.append(element("p", "No .md files in this directory.", "index-empty"));
-    return wrapper;
+function runIndexCommand(command: ListCommand) {
+  if (!indexList) return;
+  switch (command.type) {
+    case "move":
+      indexList.move(command.count);
+      return;
+    case "top":
+      indexList.top();
+      return;
+    case "bottom":
+      indexList.bottom();
+      return;
+    case "filter":
+      indexList.openFilter();
+      return;
+    case "open":
+      indexList.open();
+      return;
+    case "cancel":
+      indexList.cancel();
+      return;
   }
-
-  if (tabs.length > 0) {
-    const section = element("section", "", "index-group");
-    section.append(element("h2", "Recent"));
-    const list = element("ul", "", "files");
-    for (const tab of tabs) {
-      const link = element("a", tab.path);
-      link.href = viewUrl(tab.path);
-      const item = document.createElement("li");
-      item.append(link);
-      list.append(item);
-    }
-    section.append(list);
-    wrapper.append(section);
-  }
-
-  const groups = new Map<string, string[]>();
-  for (const file of files) {
-    const slash = file.lastIndexOf("/");
-    const dir = slash < 0 ? "" : file.slice(0, slash);
-    const group = groups.get(dir);
-    if (group) group.push(file);
-    else groups.set(dir, [file]);
-  }
-
-  for (const [dir, group] of groups) {
-    const section = element("section", "", "index-group");
-    section.append(element("h2", dir || "Root"));
-    const list = element("ul", "", "files");
-    for (const file of group) {
-      const name = dir ? file.slice(dir.length + 1) : file;
-      const link = element("a", name);
-      link.href = viewUrl(file);
-      link.title = file;
-      const item = document.createElement("li");
-      item.append(link);
-      list.append(item);
-    }
-    section.append(list);
-    wrapper.append(section);
-  }
-
-  return wrapper;
 }
 
 async function loadFile(path: string) {
@@ -2149,6 +2134,7 @@ async function showIndex() {
   active = null;
   editable = false;
   viewNav.reset();
+  listNav.reset();
   closeHints();
   closePrompt();
   content.classList.remove("editing");
@@ -2159,7 +2145,10 @@ async function showIndex() {
   let nodes: Node;
   try {
     const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
-    nodes = buildIndex(files);
+    reconcileIndexState(indexState, files);
+    indexList ??= createIndexList({ state: indexState, onOpen: openInCurrentTab });
+    indexList.setEntries(indexEntries(files));
+    nodes = indexList.element;
   } catch (error) {
     nodes = renderErrorState(
       "Could not load the index",
@@ -2173,6 +2162,8 @@ async function showIndex() {
   loading = false;
   content.replaceChildren(nodes);
   scrollTo(0, 0);
+  // Si hay un elemento enfocado (vuelta de un documento), que quede a la vista.
+  indexList?.reveal();
   clearSearch();
   invalidateBlocks();
   updateReadingIndicator();
@@ -2183,6 +2174,8 @@ async function showTab(tab: Tab, scroll?: number) {
   const id = ++request;
   if (editor) leaveEditor();
   active = tab;
+  // El documento mostrado pasa a ser la selección de la portada.
+  indexState.selectedPath = tab.path;
   editable = false;
   viewNav.reset();
   closeHints();
@@ -2423,15 +2416,20 @@ async function refreshIndex() {
 
   try {
     const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
+
+    // Identidad por ruta normalizada (no por texto visible ni por orden):
+    // evita refrescos innecesarios y reconstrucciones por basenames anidados.
+    const tree = new Set(createDocs(files).map((doc) => doc.path));
     const shown = [...content.querySelectorAll<HTMLAnchorElement>(".files a")].map(
-      (link) => link.textContent ?? "",
+      (link) => link.dataset.path ?? "",
     );
-    if (shown.length === files.length && shown.every((file, index) => file === files[index])) {
+    if (shown.length === tree.size && shown.every((path) => tree.has(path))) {
       return;
     }
 
+    reconcileIndexState(indexState, files);
     const scroll = scrollY;
-    content.replaceChildren(buildIndex(files));
+    indexList?.setEntries(indexEntries(files));
     scrollTo(0, scroll);
     invalidateBlocks();
     updateReadingIndicator();
@@ -2929,6 +2927,28 @@ document.addEventListener("keydown", (event) => {
   // `[keymap.view]`: otra tecla puede hacer de `j`, `k`, `a`... (sin modificadores).
   const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
   const viewKey = plain ? (config.viewRemap[event.key] ?? event.key) : event.key;
+
+  // Portada: la lista tiene su propia máquina de teclado, independiente de la
+  // del documento (`viewNav` sigue dedicado a la vista renderizada).
+  if (!active && !editor && indexList) {
+    const command = listNav.handle({
+      key: viewKey,
+      ctrl: event.ctrlKey,
+      meta: event.metaKey,
+      alt: event.altKey,
+      altGraph: event.getModifierState?.("AltGraph") ?? false,
+    });
+    setText(statusVim, listNav.pending);
+    if (command) {
+      event.preventDefault();
+      runIndexCommand(command);
+      return;
+    }
+    if (listNav.pending) {
+      event.preventDefault();
+      return;
+    }
+  }
 
   if (!editor && editable && active) {
     const command = viewNav.handle({
