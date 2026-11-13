@@ -394,19 +394,43 @@ a.wikilink.missing {
 
 .index-header {
   margin-bottom: 1.5rem;
+  text-align: center;
 }
 
-.index-header h1 {
-  margin: 0 0 0.35rem;
-  font-size: 1.1rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  border: 0;
+.index-logo {
+  display: block;
+  margin: 0 auto 0.4rem;
+  max-height: 10rem;
+  width: auto;
 }
 
 .index-hint {
   margin: 0;
   color: var(--faint);
+  font-size: 0.75rem;
+}
+
+/* Vista previa del documento seleccionado: cuadrado fijo en la esquina
+   inferior derecha, con el mismo render de markdown que la vista principal.
+   Es solo un vistazo: sin barra de desplazamiento. */
+.index-preview {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  width: 420px;
+  height: 420px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.15);
+  z-index: 5;
+}
+
+.index-preview-body {
+  height: 100%;
+  overflow: hidden;
+  padding: 0.6rem 0.75rem;
   font-size: 0.75rem;
 }
 

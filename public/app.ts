@@ -14,6 +14,7 @@ import { createGrep } from "./grep.ts";
 import { createDocs } from "./index/model.ts";
 import { createIndexState, reconcileIndexState } from "./index/state.ts";
 import { createIndexList, type IndexList, type ListEntry } from "./index/list.ts";
+import { createIndexPreview, type IndexPreview } from "./index/preview.ts";
 import { createListNav, type ListCommand } from "./index/navigation.ts";
 import { hintLabels } from "./hints.ts";
 import { createLeader, isModifierKey } from "./keys.ts";
@@ -134,6 +135,7 @@ let recent = loadRecent();
 let indexState = createIndexState();
 const listNav = createListNav();
 let indexList: IndexList | null = null;
+let indexPreview: IndexPreview | null = null;
 // Casillas de la vista renderizada: marcadas / total.
 let taskCounts = { done: 0, total: 0 };
 
@@ -2146,7 +2148,14 @@ async function showIndex() {
   try {
     const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
     reconcileIndexState(indexState, files);
-    indexList ??= createIndexList({ state: indexState, onOpen: openInCurrentTab });
+    indexPreview ??= createIndexPreview();
+    indexList ??= createIndexList({
+      state: indexState,
+      onOpen: openInCurrentTab,
+      onSelect: (path) => void indexPreview?.show(path),
+    });
+    // El preview vive dentro de la portada: desaparece con ella al abrir un doc.
+    indexList.element.append(indexPreview.element);
     indexList.setEntries(indexEntries(files));
     nodes = indexList.element;
   } catch (error) {

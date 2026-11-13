@@ -4,6 +4,8 @@
 // documentos vive fuera y el filtro solo oculta elementos del DOM.
 
 import { fuzzyMatch } from "../fuzzy.ts";
+// Import del asset: el bundler lo sirve con URL estable (dev y bundle).
+import logoUrl from "../img/logo-full.png";
 import { viewUrl } from "../render.ts";
 import { splitPath } from "./model.ts";
 import type { IndexState } from "./state.ts";
@@ -17,6 +19,8 @@ export interface ListEntry {
 export interface IndexListOptions {
   state: IndexState;
   onOpen: (path: string) => void;
+  /** Cambio de selección (documento enfocado, o `null`). */
+  onSelect?: (path: string | null) => void;
 }
 
 export interface IndexList {
@@ -33,18 +37,20 @@ export interface IndexList {
 }
 
 export function createIndexList(options: IndexListOptions): IndexList {
-  const { state, onOpen } = options;
+  const { state, onOpen, onSelect } = options;
 
   const root = document.createElement("div");
   root.className = "index";
   const header = document.createElement("div");
   header.className = "index-header";
-  const title = document.createElement("h1");
-  title.textContent = "Files";
+  const logo = document.createElement("img");
+  logo.className = "index-logo";
+  logo.src = logoUrl;
+  logo.alt = "MarkVi";
   const hint = document.createElement("p");
   hint.className = "index-hint";
   hint.textContent = "j/k move · gg/G ends · / filter · Enter open · space + f find";
-  header.append(title, hint);
+  header.append(logo, hint);
 
   // Barra de filtro: un <input> real, así el navegador gestiona la escritura y
   // el manejador global de teclas ignora lo que se teclea dentro.
@@ -86,6 +92,7 @@ export function createIndexList(options: IndexListOptions): IndexList {
     // En la lista el foco y la selección coinciden: solo hay documentos.
     state.focusedNodeId = path;
     state.selectedPath = path;
+    onSelect?.(path);
     link.scrollIntoView({ block: "nearest" });
   }
 
