@@ -136,6 +136,8 @@ jk = "<Esc>"
 
 Invalid values never stop the app: they are ignored, the first problem is shown in the status bar and all of them are printed to the browser console and the server log. A shortcut cannot start with another bound sequence (`ff` while `f` is bound): unbind `f` first. In the editor's Normal mode the leader key replaces its Vim meaning (with `,` you lose "repeat `f` / `t` backwards").
 
+A guided tour of the app lives in the [`example` directory](./example): run `bun run server.ts ./example` and open `index.md`.
+
 ## Rendering Extras
 
 Three optional extras, all enabled by default. Disable any of them under `[render]` in `config.toml` (`footnotes`, `alerts`, `frontmatter`) to get the plain rendering back; reload the browser to apply.
