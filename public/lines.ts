@@ -54,11 +54,20 @@ export function annotateTokenLines(tokens: readonly LineToken[], source: string)
   let cursor = 0;
 
   for (const token of tokens) {
+    // marked-footnote antepone un token `footnotes` cuyo `raw` («Footnotes») no
+    // existe en el texto: no es un bloque del documento y no debe mover el cursor.
+    if (token.type === "footnotes") continue;
+
     const found = flat.indexOf(token.raw, cursor);
-    const start = found >= 0 ? found : cursor;
-    setRange(token, start, starts);
-    cursor = start + token.raw.length;
-    if (token.type === "list") annotateList(token, flat, start, starts);
+    // Un `raw` que no está en el texto tampoco avanza el cursor: inventar su
+    // longitud desplazaría todos los bloques siguientes.
+    if (found < 0) {
+      setRange(token, cursor, starts);
+      continue;
+    }
+    setRange(token, found, starts);
+    cursor = found + token.raw.length;
+    if (token.type === "list") annotateList(token, flat, found, starts);
   }
 }
 

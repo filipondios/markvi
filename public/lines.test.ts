@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Marked } from "marked";
+import markedFootnote from "marked-footnote";
 import {
   annotateTokenLines,
   interpolateLine,
@@ -173,4 +174,34 @@ test("anota listas y citas con finales de línea CRLF", () => {
   ]);
   const quote = tokens.find((token) => token.type === "blockquote");
   expect([quote?.line, quote?.endLine]).toEqual([6, 7]);
+});
+
+test("un token `footnotes` (marked-footnote) no desplaza las líneas del resto", () => {
+  const source = "# Título\n\nTexto.\n\n## Footnotes\n\nFin.\n";
+  const marked = new Marked();
+  marked.use(markedFootnote());
+  const tokens = marked.lexer(source) as unknown as LineToken[];
+  // El plugin antepone un token con un `raw` que no está en el documento.
+  expect(tokens[0]!.type).toBe("footnotes");
+
+  annotateTokenLines(tokens, source);
+  const blocks = tokens
+    .filter((token) => token.type !== "space" && token.type !== "footnotes")
+    .map((token) => [token.type, token.line, token.endLine]);
+  expect(blocks).toEqual([
+    ["heading", 1, 1],
+    ["paragraph", 3, 3],
+    ["heading", 5, 5],
+    ["paragraph", 7, 7],
+  ]);
+});
+
+test("un `raw` que no aparece en el texto no avanza el cursor", () => {
+  const tokens: LineToken[] = [
+    { type: "paragraph", raw: "uno\n\n" },
+    { type: "ghost", raw: "no está en el texto" },
+    { type: "paragraph", raw: "dos" },
+  ];
+  annotateTokenLines(tokens, "uno\n\ndos");
+  expect(tokens.map((token) => token.line)).toEqual([1, 3, 3]);
 });
