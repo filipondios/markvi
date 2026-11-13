@@ -136,6 +136,18 @@ jk = "<Esc>"
 
 Invalid values never stop the app: they are ignored, the first problem is shown in the status bar and all of them are printed to the browser console and the server log. A shortcut cannot start with another bound sequence (`ff` while `f` is bound): unbind `f` first. In the editor's Normal mode the leader key replaces its Vim meaning (with `,` you lose "repeat `f` / `t` backwards").
 
+## Rendering Extras
+
+Three optional extras, all enabled by default. Disable any of them under `[render]` in `config.toml` (`footnotes`, `alerts`, `frontmatter`) to get the plain rendering back; reload the browser to apply.
+
+| Extra | Syntax | Rendering |
+| ----- | ------ | --------- |
+| Footnotes | `[^1]` in the text and `[^1]: definition` anywhere | Superscript link to a notes section at the end, with back-references |
+| Alerts | `> [!NOTE]` (also `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`) as the first line of a blockquote | Colored callout with its title; the marker line disappears |
+| Front matter | `---`, YAML keys, `---` at the very top of the file | Hidden from the view and the TOC; still visible in the editor |
+
+A file that starts with `---` without a closing delimiter keeps rendering it as a horizontal rule.
+
 ## Live Reload and Conflicts
 
 The server watches the directory using `fs.watch` and sends notifications over SSE. If a file changes on disk and there are no local edits, the tab reloads automatically. If there is an unsaved draft, the bottom status bar displays a conflict notification with options to reload or overwrite the file.
