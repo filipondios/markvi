@@ -166,20 +166,6 @@ markvi ~/notes # replace notes with your directory
 
 The binary bundles the frontend and does not require `bun` to be installed at runtime.
 
-## Regenerating the Screenshots
-
-The GIF and the screenshots in `docs/` are recorded from the real app by a script, so they can be refreshed whenever the interface changes:
-
-```
-bun install
-bunx playwright install chromium   # once
-bun run demo                       # screenshots + GIF (needs ffmpeg for the GIF)
-bun run demo --only shots          # just the screenshots
-bun run demo --only gif --theme dark
-```
-
-It works on a temporary copy of `example/` with an empty configuration, so your own notes and `config.toml` are never touched. The key overlay in the GIF is injected by the script only while recording; it is not part of the app. The scenario is `recordGif` in `scripts/demo.ts`.
-
 ## Licenses
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for the full license text.
