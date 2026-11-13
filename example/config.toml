@@ -20,6 +20,13 @@
 # relativenumber = false
 # scrolloff = 0
 
+# Optional rendering extras, all on by default. Set one to false to get the
+# plain rendering back.
+# [render]
+# footnotes = true    # GFM footnotes: `[^1]` references and a notes section
+# alerts = true       # GitHub alerts: `> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`
+# frontmatter = true  # YAML front matter (`--- … ---`) is separated, not rendered
+
 # Leader shortcuts: the keys pressed after the leader key.
 # Actions: find, grep, recent, alternate, toc, close.
 # An action starting with ":" runs that command. "none" removes a shortcut.
