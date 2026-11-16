@@ -5,9 +5,29 @@ import { defaultConfig, type Config, type LoadedConfig } from "../src/configdefa
 
 export type { Config };
 
+declare global {
+  interface Window {
+    /** Peticiones lanzadas por el script de arranque de index.html. */
+    __boot?: { t: number; r: Record<string, Promise<Response> | undefined> };
+  }
+}
+
+// Una petición temprana solo vale si se recoge al arrancar: pasado este tiempo la
+// respuesta podría ser vieja.
+const EARLY_MAX_AGE = 10_000;
+
+/** Recoge (una sola vez) la petición que index.html lanzó antes de cargar el bundle. */
+export function takeEarly(url: string): Promise<Response> | undefined {
+  const boot = window.__boot;
+  const request = boot?.r[url];
+  if (!boot || !request) return undefined;
+  delete boot.r[url];
+  return Date.now() - boot.t <= EARLY_MAX_AGE ? request : undefined;
+}
+
 export async function loadClientConfig(): Promise<LoadedConfig> {
   try {
-    const response = await fetch("/api/config", { cache: "no-store" });
+    const response = await (takeEarly("/api/config") ?? fetch("/api/config", { cache: "no-store" }));
     if (!response.ok) throw new Error(`Error ${response.status}`);
     return (await response.json()) as LoadedConfig;
   } catch (error) {

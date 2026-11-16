@@ -66,6 +66,10 @@ export interface Selector {
 }
 
 const PREVIEW_DELAY = 90;
+// Filas que se crean de una vez. Con miles de resultados, crear todas (cada una con
+// sus nodos y listeners) tardaba más de 150 ms por pulsación; el resto se añade al
+// acercarse al final de la lista o al seleccionar una fila más lejana.
+const ROW_BATCH = 80;
 const REMOTE_DELAY = 140;
 
 // Cada selector necesita ids propios: hay varios en la página a la vez.
@@ -165,6 +169,8 @@ export function createSelector<T>(options: SelectorOptions<T>): Selector {
   let items: SelectorItem<T>[] = [];
   let results: FuzzyItemResult<SelectorItem<T>>[] = [];
   let selected = -1;
+  let rendered = 0;
+  let selectedRow: Element | undefined;
   let loadToken = 0;
   let previewToken = 0;
   let previewTimer = 0;
@@ -178,26 +184,34 @@ export function createSelector<T>(options: SelectorOptions<T>): Selector {
   const emptyMessage = () =>
     typeof options.empty === "function" ? options.empty(input.value) : options.empty;
 
-  function paint() {
+  function createRow(index: number) {
+    const result = results[index]!;
+    const item = element("li", "finder-result");
+    item.id = `${uid}-option-${index}`;
+    item.dataset.index = String(index);
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(index === selected));
+    if (index === selected) item.classList.add("is-selected");
+    item.append(options.renderItem(result.item, result.positions));
+    return item;
+  }
+
+  /** Crea las filas pendientes hasta `upTo` (sin incluir). */
+  function appendRows(upTo: number) {
+    const end = Math.min(upTo, results.length);
+    if (end <= rendered) return;
+
     const fragment = document.createDocumentFragment();
+    for (let index = rendered; index < end; index++) fragment.append(createRow(index));
+    rendered = end;
+    list.append(fragment);
+  }
 
-    results.forEach((result, index) => {
-      const item = element("li", "finder-result");
-      item.id = `${uid}-option-${index}`;
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", String(index === selected));
-      if (index === selected) item.classList.add("is-selected");
-
-      item.append(options.renderItem(result.item, result.positions));
-      item.addEventListener("mouseenter", () => select(index));
-      item.addEventListener("click", () => {
-        select(index);
-        choose();
-      });
-      fragment.append(item);
-    });
-
-    list.replaceChildren(fragment);
+  function paint() {
+    rendered = 0;
+    list.replaceChildren();
+    appendRows(Math.max(ROW_BATCH, selected + 1));
+    selectedRow = selected >= 0 ? list.children[selected] : undefined;
     count.textContent = options.count?.(results.length, items.length) ?? "";
 
     if (selected >= 0) {
@@ -276,15 +290,16 @@ export function createSelector<T>(options: SelectorOptions<T>): Selector {
 
   function select(index: number) {
     if (index === selected || index < 0 || index >= results.length) return;
+    appendRows(index + 1);
+    selectedRow?.classList.remove("is-selected");
+    selectedRow?.setAttribute("aria-selected", "false");
     selected = index;
-
-    Array.from(list.children).forEach((item, position) => {
-      item.classList.toggle("is-selected", position === selected);
-      item.setAttribute("aria-selected", String(position === selected));
-    });
+    selectedRow = list.children[selected];
+    selectedRow?.classList.add("is-selected");
+    selectedRow?.setAttribute("aria-selected", "true");
 
     input.setAttribute("aria-activedescendant", `${uid}-option-${selected}`);
-    list.children[selected]?.scrollIntoView({ block: "nearest" });
+    selectedRow?.scrollIntoView({ block: "nearest" });
     schedulePreview();
   }
 
@@ -403,6 +418,31 @@ export function createSelector<T>(options: SelectorOptions<T>): Selector {
   }
 
   input.addEventListener("input", () => updateResults(true));
+
+  // Un solo listener para todas las filas (en vez de dos por fila).
+  const rowIndex = (event: Event) => {
+    const row = event.target instanceof Element ? event.target.closest<HTMLElement>(".finder-result") : null;
+    return row && list.contains(row) ? Number(row.dataset.index) : -1;
+  };
+  list.addEventListener("mouseover", (event) => {
+    const index = rowIndex(event);
+    if (index >= 0) select(index);
+  });
+  list.addEventListener("click", (event) => {
+    const index = rowIndex(event);
+    if (index < 0) return;
+    select(index);
+    choose();
+  });
+  list.addEventListener(
+    "scroll",
+    () => {
+      if (rendered < results.length && list.scrollTop + list.clientHeight >= list.scrollHeight - 200) {
+        appendRows(rendered + ROW_BATCH);
+      }
+    },
+    { passive: true },
+  );
 
   backdrop.addEventListener("mousedown", (event) => {
     if (event.target !== backdrop) return;

@@ -1,15 +1,10 @@
-import {
-  applyVimMappings,
-  createEditor,
-  setEditorDefaults,
-  type EditorExitOptions,
-  type EditorSession,
-  type FileCommand,
-} from "./editor.ts";
+// Solo tipos: CodeMirror y Vim pesan más de la mitad del bundle y no hacen falta
+// para leer. El módulo se carga con `loadEditorModule` (primer uso o hueco libre).
+import type { EditorExitOptions, EditorSession, FileCommand } from "./editor.ts";
 import { createBacklinks } from "./backlinks.ts";
 import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
-import { applyAppearance, isDark, keyLabel, loadClientConfig } from "./config.ts";
+import { applyAppearance, isDark, keyLabel, loadClientConfig, takeEarly } from "./config.ts";
 import { createGrep } from "./grep.ts";
 import { createDocs } from "./index/model.ts";
 import { createIndexState, reconcileIndexState } from "./index/state.ts";
@@ -79,9 +74,7 @@ const loadedConfig = await loadClientConfig();
 const config = loadedConfig.config;
 const configWarnings = [...loadedConfig.warnings];
 applyAppearance(config);
-setEditorDefaults(config.editor);
 setRenderOptions(config.render);
-configWarnings.push(...applyVimMappings(config.vimMappings));
 
 /** ¿Es esta la tecla líder? (AltGr cuenta como Ctrl+Alt: no se descarta.) */
 function isLeaderKey(event: KeyboardEvent) {
@@ -144,6 +137,29 @@ let active: Tab | null = null;
 let request = 0;
 let editor: EditorSession | undefined;
 let editable = false;
+
+type EditorModule = typeof import("./editor.ts");
+let editorModule: EditorModule | undefined;
+let editorLoading: Promise<EditorModule> | undefined;
+
+/** Carga CodeMirror + Vim una sola vez y le aplica la configuración del usuario. */
+function loadEditorModule() {
+  editorLoading ??= import("./editor.ts").then(
+    (module) => {
+      module.setEditorDefaults(config.editor);
+      const failures = module.applyVimMappings(config.vimMappings);
+      for (const failure of failures) console.warn(`markvi config: ${failure}`);
+      if (failures.length > 0) notify(`Config: ${failures[0]}`, "warn", 10000);
+      editorModule = module;
+      return module;
+    },
+    (error: unknown) => {
+      editorLoading = undefined;
+      throw error;
+    },
+  );
+  return editorLoading;
+}
 let loading = false;
 let vimStatusTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -1318,7 +1334,8 @@ function currentPath() {
 }
 
 async function api(url: string, init?: RequestInit) {
-  const response = await fetch(url, init);
+  // La primera lectura de config/archivo/árbol ya salió desde el HTML (index.html).
+  const response = await ((!init && takeEarly(url)) || fetch(url, init));
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new ApiError(response.status, body?.error ?? `Error ${response.status}`);
@@ -1688,6 +1705,18 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
   const cursor = options.cursor ?? (wasView ? readingCursor(tab) : tab.cursor);
   const screenY = options.screenY ?? (wasView ? referenceY() : undefined);
 
+  // Sin el módulo (nada lo ha pedido aún) se espera a que llegue y se reintenta con
+  // la misma posición; el resto de la entrada (estado, DOM) ocurre en ese reintento.
+  if (!editorModule) {
+    if (tab.mode === "edit") content.replaceChildren();
+    loadEditorModule().then(
+      () => enterEditor(tab, { cursor, screenY }),
+      (error: unknown) =>
+        notify(`Could not load the editor: ${error instanceof Error ? error.message : error}`, "error", 5000),
+    );
+    return;
+  }
+
   tab.mode = "edit";
   if (wasView) tab.scroll = scrollY;
   if (!tab.dirty) tab.draft = tab.raw;
@@ -1700,7 +1729,7 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
   content.replaceChildren(host);
   content.classList.add("editing");
   invalidateBlocks();
-  editor = createEditor(host, tab.draft, {
+  editor = editorModule.createEditor(host, tab.draft, {
     cursor,
     screenY,
     onChange(value) {
@@ -3091,6 +3120,14 @@ if (initialPath) {
   void showTab(tab);
 } else {
   void showIndex();
+}
+
+// Con la primera vista ya pintada, el editor se descarga en un hueco libre: al
+// pulsar `a` suele estar listo y el arranque no paga su análisis y evaluación.
+{
+  const preload = () => void loadEditorModule().catch(() => undefined);
+  if ("requestIdleCallback" in window) requestIdleCallback(preload, { timeout: 3000 });
+  else setTimeout(preload, 500);
 }
 
 // Un aviso a la vista (todos van a la consola); `:config` recuerda de dónde se lee.
