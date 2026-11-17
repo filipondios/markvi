@@ -80,7 +80,7 @@ export const DEFAULT_LEADER_BINDINGS: readonly LeaderBinding[] = [
 export function defaultConfig(): Config {
   return {
     leader: " ",
-    theme: "auto",
+    theme: "dark",
     font: null,
     editor: { number: true, relativenumber: false, scrolloff: 0 },
     leaderBindings: DEFAULT_LEADER_BINDINGS.map((binding) => ({

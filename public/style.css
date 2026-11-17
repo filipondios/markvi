@@ -405,9 +405,13 @@ a.wikilink.missing {
 }
 
 .index-hint {
-  margin: 0;
+  display: block;
+  width: 100%;
+  margin: 0 auto;
   color: var(--faint);
   font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: center;
 }
 
 /* Vista previa del documento seleccionado: cuadrado fijo en la esquina
@@ -1438,4 +1442,319 @@ pre code {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+
+/* -------------------------------------------------------------------------
+   Markvi editorial: superficies planas, geometría ortogonal y lectura serena.
+   ------------------------------------------------------------------------- */
+:root {
+  --bg: #fbfaf7;
+  --surface: #f1efe9;
+  --surface-raised: #fffefa;
+  --surface-sunken: #e9e6de;
+  --fg: #282722;
+  --muted: #68665e;
+  --faint: #918e84;
+  --border: #d8d4ca;
+  --border-strong: #aaa598;
+  --accent: #315b50;
+  --accent-fg: #fffefa;
+  --link: #315b50;
+  --shadow: 0 12px 32px rgba(42, 39, 31, .10);
+  --font-reading: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+}
+
+/* Nada de píldoras: el lenguaje visual usa ángulos rectos de forma consistente. */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+body {
+  background: var(--bg);
+}
+
+#bar {
+  min-height: 3rem;
+  padding-inline: 1.25rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+#brand {
+  color: var(--fg);
+  letter-spacing: .18em;
+}
+
+#brand::before {
+  content: "§";
+  font-family: var(--font-reading);
+  font-size: 1.15rem;
+  vertical-align: -1px;
+}
+
+.tab {
+  border-bottom: 2px solid transparent;
+}
+
+.tab.is-active {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid var(--accent);
+  box-shadow: none;
+}
+
+#content {
+  max-width: 54rem;
+  padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1rem, 4vw, 2.5rem) 5rem;
+  font-family: var(--font-reading);
+  font-size: 1.08rem;
+  line-height: 1.78;
+}
+
+#content h1,
+#content h2,
+#content h3,
+#content h4,
+#content h5,
+#content h6 {
+  color: var(--fg);
+  font-family: var(--font-reading);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.025em;
+}
+
+#content h1 {
+  margin-top: 0;
+  font-size: clamp(1.9rem, 4vw, 2.55rem);
+  letter-spacing: -.045em;
+}
+
+#content h2 {
+  margin-top: 1.55em;
+  padding-bottom: .3em;
+  font-size: 1.45rem;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+#content h3 {
+  margin-top: 1.3em;
+  font-size: 1.18rem;
+}
+
+#content p,
+#content li {
+  max-width: 72ch;
+}
+
+#content a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: .18em;
+}
+
+#content blockquote {
+  margin: 1.6rem 0;
+  padding: .15rem 1.25rem;
+  color: var(--muted);
+  border-left: 2px solid var(--border-strong);
+}
+
+#content blockquote.alert {
+  position: relative;
+  margin: 1.6rem 0;
+  padding: 2.25rem 1.2rem .9rem;
+  background: color-mix(in srgb, var(--alert-color, var(--accent)) 6%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--alert-color, var(--accent)) 35%, var(--border));
+  border-top: 3px solid var(--alert-color, var(--accent));
+  color: var(--fg);
+}
+
+#content blockquote.alert::before {
+  position: absolute;
+  inset: 0 0 auto;
+  padding: .35rem 1.2rem;
+  color: var(--alert-color, var(--accent));
+  background: color-mix(in srgb, var(--alert-color, var(--accent)) 11%, var(--bg));
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+#content blockquote.alert-tip { --alert-color: #34734b; }
+#content blockquote.alert-note { --alert-color: #356b91; }
+#content blockquote.alert-important { --alert-color: #7655a3; }
+#content blockquote.alert-warning { --alert-color: #a16b16; }
+#content blockquote.alert-caution { --alert-color: #a33f38; }
+
+#content table {
+  display: table;
+  width: 100%;
+  margin: 1.7rem 0 2rem;
+  border-collapse: collapse;
+  font-family: var(--font-reading);
+  font-size: .94em;
+  line-height: 1.5;
+}
+
+#content thead {
+  border-top: 2px solid var(--fg);
+  border-bottom: 1px solid var(--fg);
+}
+
+#content th {
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .045em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+#content th,
+#content td {
+  padding: .65rem .8rem;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+#content tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--surface) 58%, transparent);
+}
+
+#content code,
+#content pre {
+  font-family: var(--font-mono);
+  font-size: .78em;
+}
+
+#content :not(pre) > code {
+  padding: .12em .32em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: #754b31;
+}
+
+#content pre.code-block {
+  position: relative;
+  margin: 1.5rem 0 1.8rem;
+  padding: 2.7rem 1.15rem 1.15rem;
+  overflow: auto;
+  background: #f1f0eb;
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--border-strong);
+  line-height: 1.65;
+}
+
+#content pre.code-block::before {
+  content: attr(data-language);
+  position: absolute;
+  inset: 0 0 auto;
+  padding: .42rem 1.15rem;
+  color: var(--muted);
+  background: #e8e6df;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+#content pre code {
+  color: #34332e;
+}
+
+#content hr {
+  height: 0;
+  border-top: 1px solid var(--border-strong);
+}
+
+#content img,
+#content video {
+  display: block;
+  margin: 1.5rem auto;
+}
+
+#status {
+  padding-inline: 1.1rem;
+  background: var(--surface);
+  border-top-color: var(--border-strong);
+}
+
+#status-mode {
+  border: 1px solid color-mix(in srgb, var(--mode-color, var(--muted)) 40%, transparent);
+  background: transparent;
+}
+
+#status-actions button,
+.state button {
+  border-radius: 0 !important;
+}
+
+.index-preview,
+.state,
+.finder,
+.which-key {
+  box-shadow: none;
+  border-color: var(--border-strong);
+}
+
+.files a:hover,
+.finder-result.is-selected {
+  background: var(--surface-sunken);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) #content :not(pre) > code {
+    color: #e7695c;
+  }
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --bg: #11130f;
+    --surface: #191c18;
+    --surface-raised: #1e211c;
+    --surface-sunken: #0b0d0a;
+    --fg: #e9e7df;
+    --muted: #b0ada2;
+    --faint: #858277;
+    --border: #41443b;
+    --border-strong: #66695d;
+    --accent: #9ab9a7;
+    --accent-fg: #11130f;
+    --link: #a8c7b4;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #11130f;
+  --surface: #191c18;
+  --surface-raised: #1e211c;
+  --surface-sunken: #0b0d0a;
+  --fg: #e9e7df;
+  --muted: #b0ada2;
+  --faint: #858277;
+  --border: #41443b;
+  --border-strong: #66695d;
+  --accent: #9ab9a7;
+  --accent-fg: #11130f;
+  --link: #a8c7b4;
+}
+
+:root[data-theme="dark"] #content :not(pre) > code {
+  color: #e7695c;
+}
+:root[data-theme="dark"] #content pre.code-block {
+  background: #191c18;
+}
+:root[data-theme="dark"] #content pre.code-block::before {
+  background: #20231c;
+}
+:root[data-theme="dark"] #content pre code {
+  color: #e9e7df;
 }

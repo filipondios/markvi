@@ -172,6 +172,7 @@ export function renderMarkdown(
   markTaskItems(content, options.interactive === true);
   addHeadingIds(content);
   if (extras.alerts) markAlerts(content);
+  markCodeBlocks(content);
   return content;
 }
 
@@ -236,6 +237,20 @@ function rewriteUrls(content: DocumentFragment, path: string) {
     const rest = url.pathname.slice(VIEW_PREFIX.length);
     const prefix = isLink && /\.md$/i.test(rest) ? VIEW_PREFIX : FILES_PREFIX;
     el.setAttribute(attr, prefix + rest + url.search + url.hash);
+  }
+}
+
+
+
+/** Añade una cabecera editorial a cada bloque de código con el lenguaje detectado. */
+function markCodeBlocks(content: DocumentFragment) {
+  for (const pre of content.querySelectorAll<HTMLPreElement>("pre")) {
+    const code = pre.querySelector("code");
+    if (!code) continue;
+    const languageClass = Array.from(code.classList).find((name) => name.startsWith("language-"));
+    const language = languageClass?.slice("language-".length) || "text";
+    pre.classList.add("code-block");
+    pre.dataset.language = language.toUpperCase();
   }
 }
 
