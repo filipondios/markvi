@@ -1140,18 +1140,14 @@ async function removeActive(input: string, force: boolean) {
   notify(`Deleted ${path}`, "ok", 3000);
 }
 
+const fileCommands: Record<FileCommandName, (command: FileCommand) => void> = {
+  edit: (command) => void openPath(command.arg),
+  mv: (command) => void moveActive(command.arg),
+  rm: (command) => void removeActive(command.arg, command.force),
+};
+
 function runFileCommand(command: FileCommand) {
-  switch (command.name) {
-    case "edit":
-      void openPath(command.arg);
-      return;
-    case "mv":
-      void moveActive(command.arg);
-      return;
-    case "rm":
-      void removeActive(command.arg, command.force);
-      return;
-  }
+  fileCommands[command.name](command);
 }
 
 /**
@@ -1207,19 +1203,14 @@ async function openPath(input: string) {
 }
 
 async function runEx(input: string) {
-  const trimmed = input.trim();
-  if (!trimmed) return;
+  const parsed = parseExCommand(input);
+  if (!parsed) {
+    notify(`Unknown command: ${input.trim()}`, "error", 3000);
+    return;
+  }
+  const { name, argument, force } = parsed;
 
-  // `!` puede ir pegado al comando (`:rm!`, `:q!`) o al final (`:e nuevo!`).
-  const [head = "", ...args] = trimmed.split(/\s+/);
-  const bang = head.endsWith("!");
-  const command = (bang ? head.slice(0, -1) : head).toLowerCase();
-  const force = bang || trimmed.endsWith("!");
-  let argument = args.join(" ");
-  if (!bang && trimmed.endsWith("!")) argument = argument.slice(0, -1).trim();
-
-  switch (command) {
-    case "e":
+  switch (name) {
     case "edit":
       await openPath(argument);
       return;
@@ -1233,21 +1224,15 @@ async function runEx(input: string) {
       );
       return;
     case "mv":
-    case "move":
-    case "rename":
       await moveActive(argument);
       return;
     case "rm":
-    case "delete":
-    case "remove":
       await removeActive(argument, force);
       return;
-    case "q":
     case "quit":
       if (!active) return;
       closeTab(active, { force });
       return;
-    case "w":
     case "write":
       if (!active) return;
       if (!active.dirty) {
@@ -1257,13 +1242,12 @@ async function runEx(input: string) {
       await saveDraft(active);
       return;
     case "wq":
-    case "x":
       if (!active) return;
       if (active.dirty && !(await saveDraft(active))) return;
       closeTab(active, { force: true });
       return;
     default:
-      notify(`Unknown command: ${command}`, "error", 3000);
+      notify(`Unknown command: ${input.trim()}`, "error", 3000);
   }
 }
 

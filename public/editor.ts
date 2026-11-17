@@ -42,14 +42,6 @@ export interface EditorOptions {
   onCommand?: (command: FileCommand) => void;
 }
 
-export interface FileCommand {
-  name: "edit" | "mv" | "rm";
-  /** Argumento sin el `!` inicial ni espacios. */
-  arg: string;
-  /** Se escribió `!` (p. ej. `:rm!`, `:e! nuevo`). */
-  force: boolean;
-}
-
 interface SessionControls {
   command(command: FileCommand): void;
   save(): Promise<boolean> | boolean;
@@ -169,12 +161,10 @@ Vim.map("ZQ", ":q!<CR>", "normal");
 // son globales y llaman a la sesión activa.
 // Comandos de archivos: el editor solo los reenvía a la aplicación, que sabe
 // de rutas, pestañas y confirmaciones.
-function defineFileCommand(name: FileCommand["name"], full: string, short?: string) {
+function defineFileCommand(name: FileCommandName, full: string, short?: string) {
   Vim.defineEx(full, short, (_cm, params) => {
-    const raw = (params.argString ?? "").trim();
-    const force = raw.startsWith("!");
-    const arg = (force ? raw.slice(1) : raw).trim();
-    const command: FileCommand = { name, arg, force };
+    const { force, argument } = parseForce(params.argString ?? "");
+    const command: FileCommand = { name, arg: argument, force };
     // Se aplaza: la librería sigue usando el editor al cerrar el prompt `:`.
     queueMicrotask(() => active?.command(command));
   });
