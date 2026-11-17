@@ -22,7 +22,10 @@ export interface LeaderBinding {
   action: string;
 }
 
-export type VimContext = "normal" | "insert" | "visual";
+export const VIM_CONTEXTS = ["normal", "insert", "visual"] as const;
+export type VimContext = (typeof VIM_CONTEXTS)[number];
+export const KEYMAP_SECTIONS = ["leader", "view", ...VIM_CONTEXTS] as const;
+export const CONFIG_SECTIONS = ["leader", "theme", "font", "editor", "keymap", "render"] as const;
 
 export interface VimMapping {
   context: VimContext;
@@ -30,17 +33,25 @@ export interface VimMapping {
   rhs: string;
 }
 
+export interface EditorOptions {
+  number: boolean;
+  relativenumber: boolean;
+  scrolloff: number;
+}
+
+export const DEFAULT_EDITOR: EditorOptions = {
+  number: true,
+  relativenumber: false,
+  scrolloff: 0,
+};
+
 export interface Config {
   /** Tecla líder (valor de `KeyboardEvent.key`). */
   leader: string;
   theme: Theme;
   /** Valor CSS de `font-family` para el texto monoespaciado, o `null` para el de serie. */
   font: string | null;
-  editor: {
-    number: boolean;
-    relativenumber: boolean;
-    scrolloff: number;
-  };
+  editor: EditorOptions;
   /** Atajos de la líder, ya fusionados con los de serie. */
   leaderBindings: LeaderBinding[];
   /** Tecla pulsada → tecla que recibe la vista renderizada. */
@@ -67,6 +78,8 @@ export interface LoadedConfig {
   exists: boolean;
 }
 
+export const RENDER_EXTRAS = ["footnotes", "alerts", "frontmatter"] as const satisfies readonly (keyof RenderExtras)[];
+
 export const DEFAULT_LEADER_BINDINGS: readonly LeaderBinding[] = [
   { keys: ["f"], action: "find" },
   { keys: ["/"], action: "grep" },
@@ -77,18 +90,24 @@ export const DEFAULT_LEADER_BINDINGS: readonly LeaderBinding[] = [
   { keys: ["x"], action: "close" },
 ];
 
+function defaultRenderExtras(): RenderExtras {
+  const extras = {} as RenderExtras;
+  for (const key of RENDER_EXTRAS) extras[key] = true;
+  return extras;
+}
+
 export function defaultConfig(): Config {
   return {
     leader: " ",
-    theme: "dark",
+    theme: "auto",
     font: null,
-    editor: { number: true, relativenumber: false, scrolloff: 0 },
+    editor: { ...DEFAULT_EDITOR },
     leaderBindings: DEFAULT_LEADER_BINDINGS.map((binding) => ({
       keys: [...binding.keys],
       action: binding.action,
     })),
     viewRemap: {},
     vimMappings: [],
-    render: { footnotes: true, alerts: true, frontmatter: true },
+    render: defaultRenderExtras(),
   };
 }

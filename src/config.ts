@@ -10,8 +10,12 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 import {
+  CONFIG_SECTIONS,
   DEFAULT_LEADER_BINDINGS,
+  KEYMAP_SECTIONS,
   LEADER_ACTIONS,
+  RENDER_EXTRAS,
+  VIM_CONTEXTS,
   defaultConfig,
   type Config,
   type LeaderBinding,
@@ -19,8 +23,6 @@ import {
   type RenderExtras,
   type VimContext,
 } from "./configdefaults.ts";
-
-export * from "./configdefaults.ts";
 
 export function resolveConfigPath(
   flag: string | undefined,
@@ -103,7 +105,7 @@ export function validateConfig(raw: unknown): { config: Config; warnings: string
     return { config, warnings };
   }
 
-  const known = new Set(["leader", "theme", "font", "editor", "keymap", "render"]);
+  const known = new Set<string>(CONFIG_SECTIONS);
   for (const key of Object.keys(raw)) {
     if (!known.has(key)) warn(`Unknown key "${key}".`);
   }
@@ -158,7 +160,6 @@ export function validateConfig(raw: unknown): { config: Config; warnings: string
   }
 
   // --- [render] -------------------------------------------------------------
-  const RENDER_EXTRAS = ["footnotes", "alerts", "frontmatter"] as const;
   if (raw.render !== undefined) {
     if (!isTable(raw.render)) {
       warn(`"render" must be a table.`);
@@ -180,7 +181,7 @@ export function validateConfig(raw: unknown): { config: Config; warnings: string
   if (keymap !== undefined && !isTable(keymap)) {
     warn(`"keymap" must be a table.`);
   } else if (keymap !== undefined) {
-    const sections = new Set(["leader", "view", "normal", "insert", "visual"]);
+    const sections = new Set<string>(KEYMAP_SECTIONS);
     for (const [name, table] of Object.entries(keymap)) {
       if (!sections.has(name)) {
         warn(`Unknown section "keymap.${name}".`);
@@ -191,7 +192,7 @@ export function validateConfig(raw: unknown): { config: Config; warnings: string
 
     applyLeader(config, keymap.leader, warn);
     applyViewRemap(config, keymap.view, warn);
-    for (const context of ["normal", "insert", "visual"] as const) {
+    for (const context of VIM_CONTEXTS) {
       applyVimMappings(config, context, keymap[context], warn);
     }
   }

@@ -28,7 +28,7 @@
 # frontmatter = true  # YAML front matter (`--- … ---`) is separated, not rendered
 
 # Leader shortcuts: the keys pressed after the leader key.
-# Actions: find, grep, recent, alternate, toc, close.
+# Actions: find, grep, recent, alternate, toc, backlinks, close.
 # An action starting with ":" runs that command. "none" removes a shortcut.
 # A sequence can have up to 4 keys ("gt" is g then t), but it cannot start
 # with another bound sequence: unbind "f" first to use "ff".
@@ -38,6 +38,7 @@
 # r = "recent"
 # a = "alternate"
 # t = "toc"
+# b = "backlinks"
 # x = "close"
 # n = ":e diary.md"
 

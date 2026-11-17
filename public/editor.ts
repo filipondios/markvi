@@ -5,6 +5,8 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { drawSelection, EditorView, GutterMarker, gutter, keymap } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
+import { DEFAULT_EDITOR } from "../src/configdefaults.ts";
+import { parseForce, type FileCommand, type FileCommandName } from "./excommands.ts";
 import type { VimStatus } from "./vimui.ts";
 import { minimalTextChange } from "./textchange.ts";
 
@@ -65,9 +67,9 @@ interface SessionControls {
 }
 
 let active: SessionControls | undefined;
-let defaultNumber = true;
-let defaultRelative = false;
-let defaultScrolloff = 0;
+let defaultNumber = DEFAULT_EDITOR.number;
+let defaultRelative = DEFAULT_EDITOR.relativenumber;
+let defaultScrolloff = DEFAULT_EDITOR.scrolloff;
 
 function numberOption(value?: boolean) {
   if (value === undefined) return active?.getNumber() ?? defaultNumber;
@@ -121,9 +123,9 @@ export function applyVimMappings(mappings: readonly VimMappingInput[]) {
   return failures;
 }
 
-Vim.defineOption("number", true, "boolean", ["nu"], numberOption);
-Vim.defineOption("relativenumber", false, "boolean", ["rnu"], relativeOption);
-Vim.defineOption("scrolloff", 0, "number", ["so"], scrolloffOption);
+Vim.defineOption("number", DEFAULT_EDITOR.number, "boolean", ["nu"], numberOption);
+Vim.defineOption("relativenumber", DEFAULT_EDITOR.relativenumber, "boolean", ["rnu"], relativeOption);
+Vim.defineOption("scrolloff", DEFAULT_EDITOR.scrolloff, "number", ["so"], scrolloffOption);
 
 // Los comandos ex son globales en la librería; solo hay un editor a la vez.
 // Salir se aplaza: la librería sigue usando el editor al cerrar el prompt `:`.
