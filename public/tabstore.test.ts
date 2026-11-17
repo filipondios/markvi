@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { isSafePath, parseStoredTabs, serializeTabs, tabLabels } from "./tabstore.ts";
+import { isSafePath } from "../src/paths.ts";
+import { parseStoredTabs, serializeTabs, tabLabels } from "./tabstore.ts";
 
 describe("isSafePath", () => {
   test("acepta rutas Markdown relativas", () => {

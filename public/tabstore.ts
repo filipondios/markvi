@@ -2,19 +2,13 @@
 // El contenido de localStorage puede estar corrupto o ser antiguo, así que se
 // comprueba todo antes de confiar en él.
 
+import { isSafePath } from "../src/paths.ts";
+
 export type TabMode = "view" | "edit";
 
 export interface StoredTab {
   path: string;
   mode: TabMode;
-}
-
-export function isSafePath(path: string) {
-  if (!path.toLowerCase().endsWith(".md")) return false;
-  if (path.startsWith("/") || path.includes("\0") || path.includes("\\")) return false;
-  return path
-    .split("/")
-    .every((segment) => segment.length > 0 && segment !== ".." && !segment.startsWith("."));
 }
 
 export function parseStoredTabs(raw: string | null): StoredTab[] {

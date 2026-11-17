@@ -2,7 +2,7 @@
 // primero) que se guarda en `localStorage`; el contenido guardado puede estar
 // corrupto o ser antiguo, así que se valida al leerlo.
 
-import { isSafePath } from "./tabstore.ts";
+import { isSafePath } from "../src/paths.ts";
 
 export const MAX_RECENT = 50;
 

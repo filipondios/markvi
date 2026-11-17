@@ -1,4 +1,4 @@
-import { normalizeNewPath } from "./newfile.ts";
+import { normalizeNewPath } from "../src/paths.ts";
 import { renderMarkdown } from "./render.ts";
 import { createSelector, highlight, type Selector } from "./selector.ts";
 

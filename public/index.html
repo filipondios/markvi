@@ -12,6 +12,7 @@
       // Arranque: las peticiones que la app necesita nada más cargar salen ya, sin
       // esperar a descargar y evaluar el bundle. La app las recoge con `takeEarly`
       // (config.ts); si no coinciden con lo que pide, simplemente no se usan.
+      // Estos literales deben igualar VIEW_PREFIX / FILES_URL / CONFIG_URL de src/paths.ts.
       (function () {
         var boot = (window.__boot = { t: Date.now(), r: {} });
         function early(url, init) {

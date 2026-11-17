@@ -4,6 +4,12 @@ import { Marked } from "marked";
 import markedFootnote from "marked-footnote";
 import { markedHighlight } from "marked-highlight";
 import {
+  FILES_PREFIX,
+  VIEW_PREFIX,
+  normalizeNewPath,
+  viewUrl,
+} from "../src/paths.ts";
+import {
   createWikiIndex,
   headingSlug,
   joinRelative,
@@ -17,14 +23,6 @@ import {
   splitFrontMatter,
   type LineToken,
 } from "./lines.ts";
-import { normalizeNewPath } from "./newfile.ts";
-
-export const VIEW_PREFIX = "/view/";
-const FILES_PREFIX = "/files/";
-
-export const viewUrl = (path: string) =>
-  VIEW_PREFIX + path.split("/").map(encodeURIComponent).join("/");
-
 const marked = new Marked(
   markedHighlight({
     emptyLangClass: "hljs",

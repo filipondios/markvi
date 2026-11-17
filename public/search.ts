@@ -19,11 +19,6 @@ export interface TextMap {
   spans: TextNodeSpan[];
 }
 
-/** Smart case: si la consulta lleva mayúsculas, distingue mayúsculas. */
-export function isCaseSensitive(query: string) {
-  return /[A-ZÁÉÍÓÚÑÜ]/.test(query);
-}
-
 export function matchOffsets(
   text: string,
   query: string,

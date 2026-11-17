@@ -14,19 +14,6 @@ export interface IndexDoc {
   readonly name: string;
 }
 
-/** Rutas relativas de MarkVi ya vienen en POSIX; se toleran `\`, `./` y `/`. */
-export function normalizePath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
-}
-
-/** Carpeta y nombre base de una ruta (`dir: ""` en la raíz). */
-export function splitPath(path: string): { dir: string; name: string } {
-  const slash = path.lastIndexOf("/");
-  return slash < 0
-    ? { dir: "", name: path }
-    : { dir: path.slice(0, slash), name: path.slice(slash + 1) };
-}
-
 /**
  * Documentos del índice, ordenados por ruta: el orden estable es el que permite
  * que «vecino más cercano» y «primero/último» no dependan de cómo llegó la lista.

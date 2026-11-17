@@ -3,6 +3,8 @@
 // vista principal (sin interacción). El elemento vive dentro de la portada,
 // así que desaparece con ella al abrir un documento.
 
+import { api } from "../api.ts";
+import { fileUrl } from "../../src/paths.ts";
 import { renderMarkdown } from "../render.ts";
 
 export interface IndexPreview {
@@ -37,9 +39,8 @@ export function createIndexPreview(): IndexPreview {
       root.hidden = false;
       body.replaceChildren("Loading…");
       try {
-        const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+        const response = await api(fileUrl(path));
         if (ticket !== token) return; // llegó una selección más nueva
-        if (!response.ok) throw new Error(`Error ${response.status}`);
         const fragment = renderMarkdown(await response.text(), path);
         if (ticket !== token) return;
         body.replaceChildren(fragment);

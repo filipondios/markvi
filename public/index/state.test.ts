@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createDocs, indexFolders, normalizePath } from "./model.ts";
+import { normalizePath } from "../../src/paths.ts";
+import { createDocs, indexFolders } from "./model.ts";
 import { createIndexState, reconcileIndexState } from "./state.ts";
 
 test("normalizePath tolera separadores y prefijos de ruta", () => {

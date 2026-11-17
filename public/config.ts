@@ -2,6 +2,7 @@
 // pide y se aplica. Si la petición falla, la app arranca con los valores de serie.
 
 import { defaultConfig, type Config, type LoadedConfig } from "../src/configdefaults.ts";
+import { CONFIG_URL } from "../src/paths.ts";
 
 export type { Config };
 
@@ -27,7 +28,7 @@ export function takeEarly(url: string): Promise<Response> | undefined {
 
 export async function loadClientConfig(): Promise<LoadedConfig> {
   try {
-    const response = await (takeEarly("/api/config") ?? fetch("/api/config", { cache: "no-store" }));
+    const response = await (takeEarly(CONFIG_URL) ?? fetch(CONFIG_URL, { cache: "no-store" }));
     if (!response.ok) throw new Error(`Error ${response.status}`);
     return (await response.json()) as LoadedConfig;
   } catch (error) {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { normalizeNewPath } from "./newfile.ts";
+import { normalizeNewPath } from "../src/paths.ts";
 
 test("añade la extensión .md y recorta espacios y ./", () => {
   expect(normalizeNewPath("idea")).toBe("idea.md");

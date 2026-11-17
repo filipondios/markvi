@@ -3,6 +3,8 @@
 // consulta tiene varias palabras, todas deben coincidir (AND). La puntuación
 // premia las coincidencias contiguas y las que empiezan palabra.
 
+import { isCaseSensitive } from "../src/case.ts";
+
 export interface FuzzyMatch {
   score: number;
   /** Índices de `target` que coinciden con la consulta. */
@@ -40,8 +42,7 @@ export function fuzzyMatch(query: string, target: string): FuzzyMatch | null {
   if (query.length === 0) return { score: 0, positions: [] };
   if (query.length > target.length) return null;
 
-  // Smart case: si la consulta lleva mayúsculas, se respeta.
-  const sensitive = query !== query.toLowerCase();
+  const sensitive = isCaseSensitive(query);
   const q = sensitive ? query : query.toLowerCase();
   const t = sensitive ? target : target.toLowerCase();
   const m = q.length;

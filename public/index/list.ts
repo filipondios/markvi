@@ -6,8 +6,8 @@
 import { fuzzyMatch } from "../fuzzy.ts";
 // Import del asset: el bundler lo sirve con URL estable (dev y bundle).
 import logoUrl from "../img/logo-full.png";
-import { viewUrl } from "../render.ts";
-import { splitPath } from "./model.ts";
+import { viewUrl } from "../../src/paths.ts";
+import { splitPath } from "../../src/paths.ts";
 import type { IndexState } from "./state.ts";
 
 export interface ListEntry {

@@ -1,10 +1,26 @@
 // Solo tipos: CodeMirror y Vim pesan más de la mitad del bundle y no hacen falta
 // para leer. El módulo se carga con `loadEditorModule` (primer uso o hueco libre).
-import type { EditorExitOptions, EditorSession, FileCommand } from "./editor.ts";
+import { altGraph, viewKeyOf } from "./keynav.ts";
+import { isCaseSensitive } from "../src/case.ts";
+import { LEADER_ACTIONS, type LeaderAction } from "../src/configdefaults.ts";
+import type { SearchResults } from "../src/hits.ts";
+import {
+  BACKLINKS_URL,
+  EVENTS_URL,
+  MOVE_URL,
+  SEARCH_URL,
+  TREE_URL,
+  VIEW_PREFIX,
+  fileUrl,
+  viewUrl,
+} from "../src/paths.ts";
+import type { EditorExitOptions, EditorSession } from "./editor.ts";
+import { parseExCommand, type FileCommand, type FileCommandName } from "./excommands.ts";
 import { createBacklinks } from "./backlinks.ts";
 import { createFinder } from "./finder.ts";
 import { fuzzySearch } from "./fuzzy.ts";
-import { applyAppearance, isDark, keyLabel, loadClientConfig, takeEarly } from "./config.ts";
+import { api, ApiError } from "./api.ts";
+import { applyAppearance, isDark, keyLabel, loadClientConfig } from "./config.ts";
 import { createGrep } from "./grep.ts";
 import { createDocs } from "./index/model.ts";
 import { createIndexState, reconcileIndexState } from "./index/state.ts";
@@ -23,7 +39,7 @@ import {
   readingReferenceY,
   type BlockBox,
 } from "./lines.ts";
-import { normalizeNewPath } from "./newfile.ts";
+import { normalizeNewPath } from "../src/paths.ts";
 import {
   alternatePath,
   parseRecent,
@@ -38,11 +54,9 @@ import {
   renderMarkdown,
   setRenderOptions,
   setWikiFiles,
-  viewUrl,
-  VIEW_PREFIX,
 } from "./render.ts";
 import { createReadingCursor } from "./readingcursor.ts";
-import { buildTextMap, isCaseSensitive, matchOffsets, rangeFor } from "./search.ts";
+import { buildTextMap, matchOffsets, rangeFor } from "./search.ts";
 import { createSelector, highlight } from "./selector.ts";
 import { parseStoredTabs, serializeTabs, tabLabels, type TabMode } from "./tabstore.ts";
 import { toggleTask } from "./tasks.ts";
@@ -109,14 +123,6 @@ interface DiskEvent {
   path: string;
 }
 
-class ApiError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
 
 const STORAGE_KEY = "markvi:tabs";
 const RECENT_KEY = "markvi:recent";
@@ -766,9 +772,8 @@ function handleHintKey(event: KeyboardEvent) {
     closeHints();
     return;
   }
-  if ((event.ctrlKey || event.metaKey || event.altKey) && !event.getModifierState?.("AltGraph")) {
-    return;
-  }
+  // Los atajos con modificador no escriben letras: AltGr (Ctrl+Alt) sí las produce.
+  if ((event.ctrlKey || event.metaKey || event.altKey) && !altGraph(event)) return;
   if (event.key.length !== 1) return;
 
   hints.typed += event.key.toLowerCase();
@@ -818,7 +823,7 @@ function submitPrompt() {
 }
 
 async function listFiles() {
-  const response = await api("/api/tree");
+  const response = await api(TREE_URL);
   const files = ((await response.json()) as { files: string[] }).files;
   rememberFiles(files);
   return files;
@@ -860,10 +865,6 @@ function repaintWikiLinks() {
 function scheduleWikiRefresh() {
   clearTimeout(wikiTimer);
   wikiTimer = setTimeout(() => void refreshWikiFiles(), 150);
-}
-
-function fileUrl(path: string) {
-  return `/api/file?path=${encodeURIComponent(path)}`;
 }
 
 function errorText(error: unknown) {
@@ -1067,7 +1068,7 @@ async function moveActive(input: string) {
   updateChrome();
 
   try {
-    await api("/api/move", {
+    await api(MOVE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to: dest }),
@@ -1331,16 +1332,6 @@ function pathFromUrl(url: URL) {
 
 function currentPath() {
   return pathFromUrl(new URL(location.href));
-}
-
-async function api(url: string, init?: RequestInit) {
-  // La primera lectura de config/archivo/árbol ya salió desde el HTML (index.html).
-  const response = await ((!init && takeEarly(url)) || fetch(url, init));
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new ApiError(response.status, body?.error ?? `Error ${response.status}`);
-  }
-  return response;
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, text: string, className?: string) {
@@ -1783,7 +1774,7 @@ async function writeDraft(tab: Tab, options: { force?: boolean } = {}) {
   if (tab.etag && !options.force) headers["If-Match"] = tab.etag;
 
   try {
-    const response = await api(`/api/file?path=${encodeURIComponent(tab.path)}`, {
+    const response = await api(fileUrl(tab.path), {
       method: "PUT",
       headers,
       body: text,
@@ -1825,7 +1816,7 @@ async function recreateTab(tab: Tab) {
   const text = tab === active && editor ? editor.view.state.doc.toString() : tab.draft;
 
   try {
-    const response = await api(`/api/file?path=${encodeURIComponent(tab.path)}&create=1`, {
+    const response = await api(`${fileUrl(tab.path)}&create=1`, {
       method: "PUT",
       headers: { "Content-Type": "text/plain; charset=utf-8" },
       body: text,
@@ -2115,10 +2106,11 @@ function runIndexCommand(command: ListCommand) {
 }
 
 async function loadFile(path: string) {
-  const response = await api(`/api/file?path=${encodeURIComponent(path)}`);
+  const response = await api(fileUrl(path));
   return { text: await response.text(), etag: response.headers.get("etag") ?? undefined };
 }
 
+/** Adaptador para los selectores: solo quieren el texto, no el ETag. */
 async function readText(path: string) {
   return (await loadFile(path)).text;
 }
@@ -2175,7 +2167,7 @@ async function showIndex() {
 
   let nodes: Node;
   try {
-    const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
+    const { files } = (await (await api(TREE_URL)).json()) as { files: string[] };
     reconcileIndexState(indexState, files);
     indexPreview ??= createIndexPreview();
     indexList ??= createIndexList({
@@ -2453,7 +2445,7 @@ async function refreshIndex() {
   if (active) return;
 
   try {
-    const { files } = (await (await api("/api/tree")).json()) as { files: string[] };
+    const { files } = (await (await api(TREE_URL)).json()) as { files: string[] };
 
     // Identidad por ruta normalizada (no por texto visible ni por orden):
     // evita refrescos innecesarios y reconstrucciones por basenames anidados.
@@ -2524,7 +2516,7 @@ async function handleDiskChange(event: DiskEvent) {
 }
 
 function connectEvents() {
-  const source = new EventSource("/api/events");
+  const source = new EventSource(EVENTS_URL);
 
   // Al conectar (o reconectar) se revisa el índice: puede haberse perdido algún
   // evento entre la carga inicial y la apertura del flujo.
@@ -2575,8 +2567,8 @@ const recents = createFinder({
 
 const grep = createGrep({
   async search(query, signal) {
-    const response = await api(`/api/search?q=${encodeURIComponent(query)}`, { signal });
-    return (await response.json()) as Awaited<ReturnType<Parameters<typeof createGrep>[0]["search"]>>;
+    const response = await api(`${SEARCH_URL}?q=${encodeURIComponent(query)}`, { signal });
+    return (await response.json()) as SearchResults;
   },
   read: readText,
   open: jumpTo,
@@ -2585,8 +2577,8 @@ const grep = createGrep({
 const backlinks = createBacklinks({
   path: () => active?.path,
   async load(path) {
-    const response = await api(`/api/backlinks?path=${encodeURIComponent(path)}`);
-    return (await response.json()) as Awaited<ReturnType<Parameters<typeof createBacklinks>[0]["load"]>>;
+    const response = await api(`${BACKLINKS_URL}?path=${encodeURIComponent(path)}`);
+    return (await response.json()) as SearchResults;
   },
   read: readText,
   open: jumpTo,
