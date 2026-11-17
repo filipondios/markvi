@@ -2961,13 +2961,7 @@ document.addEventListener("keydown", (event) => {
   // Portada: la lista tiene su propia máquina de teclado, independiente de la
   // del documento (`viewNav` sigue dedicado a la vista renderizada).
   if (!active && !editor && indexList) {
-    const command = listNav.handle({
-      key: viewKey,
-      ctrl: event.ctrlKey,
-      meta: event.metaKey,
-      alt: event.altKey,
-      altGraph: event.getModifierState?.("AltGraph") ?? false,
-    });
+    const command = listNav.handle(viewKeyOf(event, viewKey));
     setText(statusVim, listNav.pending);
     if (command) {
       event.preventDefault();
@@ -2981,13 +2975,7 @@ document.addEventListener("keydown", (event) => {
   }
 
   if (!editor && editable && active) {
-    const command = viewNav.handle({
-      key: viewKey,
-      ctrl: event.ctrlKey,
-      meta: event.metaKey,
-      alt: event.altKey,
-      altGraph: event.getModifierState?.("AltGraph") ?? false,
-    });
+    const command = viewNav.handle(viewKeyOf(event, viewKey));
     paintViewPending();
 
     if (command) {

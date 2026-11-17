@@ -2,14 +2,9 @@
 // pura: recibe teclas y devuelve comandos. El DOM, el scroll y los modales
 // viven en `app.ts`, así que esto se puede probar sin navegador.
 
-export interface ViewKey {
-  key: string;
-  ctrl?: boolean;
-  meta?: boolean;
-  alt?: boolean;
-  /** AltGr: en algunas distribuciones produce `]`, `[`, `{`… */
-  altGraph?: boolean;
-}
+import { createCountState, isPlainControl, isPlainKey, type ViewKey } from "./keynav.ts";
+
+export type { ViewKey } from "./keynav.ts";
 
 export type ViewCommand =
   | { type: "moveBlock"; count: number }
@@ -35,29 +30,21 @@ export interface ViewNav {
 }
 
 export function createViewNav(): ViewNav {
-  let count = "";
-  let prefix = "";
-
-  const reset = () => {
-    count = "";
-    prefix = "";
-  };
-
-  const takeCount = () => (count ? Number(count) : undefined);
+  const state = createCountState();
 
   return {
     get pending() {
-      return count + prefix;
+      return state.pending;
     },
 
-    reset,
+    reset: () => state.reset(),
 
     handle(input) {
       const { key } = input;
-      if (input.meta || (input.alt && !input.altGraph)) return undefined;
+      if (!isPlainKey(input)) return undefined;
 
-      if (input.ctrl && !input.altGraph) {
-        reset();
+      if (isPlainControl(input)) {
+        state.reset();
         switch (key) {
           case "d":
             return { type: "halfPage", direction: 1 };
@@ -78,10 +65,10 @@ export function createViewNav(): ViewNav {
 
       // Una secuencia pendiente consume la siguiente tecla, aunque sea un
       // dígito: `g0` no es un contador.
-      if (prefix) {
-        const current = prefix;
-        const n = takeCount();
-        reset();
+      if (state.prefix) {
+        const current = state.prefix;
+        const n = state.take();
+        state.reset();
 
         if (current === "g") {
           if (key === "g") return { type: "top", count: n };
@@ -95,60 +82,55 @@ export function createViewNav(): ViewNav {
         return undefined;
       }
 
-      if (/^[0-9]$/.test(key)) {
-        // `0` solo cuenta dentro de un número (`10j`); solo no es un comando.
-        if (key === "0" && count === "") return undefined;
-        count += key;
-        return undefined;
-      }
+      if (state.digit(key)) return undefined;
 
-      const n = takeCount();
+      const n = state.take();
 
       switch (key) {
         case "g":
-          prefix = "g";
+          state.setPrefix("g");
           return undefined;
         case "]":
-          prefix = "]";
+          state.setPrefix("]");
           return undefined;
         case "[":
-          prefix = "[";
+          state.setPrefix("[");
           return undefined;
         case "j":
-          reset();
+          state.reset();
           return { type: "moveBlock", count: n ?? 1 };
         case "k":
-          reset();
+          state.reset();
           return { type: "moveBlock", count: -(n ?? 1) };
         case "G":
-          reset();
+          state.reset();
           return { type: "bottom", count: n };
         case "/":
-          reset();
+          state.reset();
           return { type: "search", direction: 1 };
         case "?":
-          reset();
+          state.reset();
           return { type: "search", direction: -1 };
         case "n":
-          reset();
+          state.reset();
           return { type: "nextMatch", direction: 1, count: n ?? 1 };
         case "N":
-          reset();
+          state.reset();
           return { type: "nextMatch", direction: -1, count: n ?? 1 };
         case "f":
-          reset();
+          state.reset();
           return { type: "hints" };
         case "x":
-          reset();
+          state.reset();
           return { type: "toggleTask" };
         case ":":
-          reset();
+          state.reset();
           return { type: "ex" };
         case "Escape":
-          reset();
+          state.reset();
           return { type: "cancel" };
         default:
-          reset();
+          state.reset();
           return undefined;
       }
     },

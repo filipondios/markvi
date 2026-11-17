@@ -2,7 +2,9 @@
 // (que sigue dedicado al documento abierto). Recibe teclas y devuelve comandos:
 // el DOM y el filtro viven en `list.ts`, así que esto se prueba sin navegador.
 
-import type { ViewKey } from "../viewnav.ts";
+import { createCountState, isPlainControl, isPlainKey, type ViewKey } from "../keynav.ts";
+
+export type { ViewKey } from "../keynav.ts";
 
 export type ListCommand =
   | { type: "move"; count: number }
@@ -20,74 +22,60 @@ export interface ListNav {
 }
 
 export function createListNav(): ListNav {
-  let count = "";
-  let pendingG = false;
-
-  const reset = () => {
-    count = "";
-    pendingG = false;
-  };
-
-  const takeCount = () => (count ? Number(count) : undefined);
+  const state = createCountState();
 
   return {
     get pending() {
-      return count + (pendingG ? "g" : "");
+      return state.pending;
     },
 
-    reset,
+    reset: () => state.reset(),
 
     handle(input) {
       const { key } = input;
-      if (input.meta || (input.alt && !input.altGraph)) return undefined;
+      if (!isPlainKey(input)) return undefined;
 
       // Las combinaciones con Ctrl (medio página, histórico…) son del documento:
       // aquí no aplican y el prefijo pendiente se descarta.
-      if (input.ctrl && !input.altGraph) {
-        reset();
+      if (isPlainControl(input)) {
+        state.reset();
         return undefined;
       }
 
       // Un prefijo pendiente consume la tecla siguiente, aunque sea dígito.
-      if (pendingG) {
-        pendingG = false;
-        reset();
+      if (state.prefix) {
+        state.reset();
         return key === "g" ? { type: "top" } : undefined;
       }
 
-      if (/^[0-9]$/.test(key)) {
-        // `0` solo cuenta dentro de un número (`10j`); solo no es un comando.
-        if (key === "0" && count === "") return undefined;
-        count += key;
-        return undefined;
-      }
+      if (state.digit(key)) return undefined;
 
-      const n = takeCount();
+      const n = state.take();
 
       switch (key) {
         case "g":
-          pendingG = true;
+          state.setPrefix("g");
           return undefined;
         case "j":
-          reset();
+          state.reset();
           return { type: "move", count: n ?? 1 };
         case "k":
-          reset();
+          state.reset();
           return { type: "move", count: -(n ?? 1) };
         case "G":
-          reset();
+          state.reset();
           return { type: "bottom" };
         case "/":
-          reset();
+          state.reset();
           return { type: "filter" };
         case "Enter":
-          reset();
+          state.reset();
           return { type: "open" };
         case "Escape":
-          reset();
+          state.reset();
           return { type: "cancel" };
         default:
-          reset();
+          state.reset();
           return undefined;
       }
     },
