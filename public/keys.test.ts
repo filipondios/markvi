@@ -76,18 +76,19 @@ describe("createLeader", () => {
   });
 
   test("identifica modificadores para ignorarlos durante la líder", () => {
-    for (const key of ["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock"]) {
-      expect(isModifierKey(key)).toBe(true);
-    }
+    const modifiers = [
+      "Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Super", "Hyper",
+      "Fn", "CapsLock", "NumLock", "ScrollLock",
+    ];
+    for (const key of modifiers) expect(isModifierKey(key)).toBe(true);
     for (const key of [" ", "Escape", "f", "ArrowDown"]) {
       expect(isModifierKey(key)).toBe(false);
     }
 
+    // La app descarta estos modificadores antes de alimentar la líder; si uno se
+    // quitara de la lista, la aserción exhaustiva de arriba lo detectaría.
     const leader = createLeader([{ keys: ["f"], run: () => {} }], { timeout: 0 });
     leader.start();
-    for (const key of ["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock"]) {
-      if (isModifierKey(key)) expect(leader.active).toBe(true);
-    }
     expect(leader.feed("f")).toBe("handled");
   });
 

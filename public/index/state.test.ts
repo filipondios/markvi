@@ -67,27 +67,9 @@ test("el foco se conserva si el nodo existe; si no, sube a la carpeta padre vál
   ).toBe("a");
 });
 
-test("las carpetas expandidas y el preview fijado descartan rutas inexistentes", () => {
-  const state = {
-    ...createIndexState(),
-    expandedPaths: ["a", "borrada", "b"],
-    previewPinnedPath: "a/b.md",
-  };
-  const next = reconcileIndexState(state, ["a/b.md", "c.md"]);
-  expect(next.expandedPaths).toEqual(["a"]);
-  expect(next.previewPinnedPath).toBe("a/b.md");
-
-  const gone = reconcileIndexState(state, ["c.md"]);
-  expect(gone.expandedPaths).toEqual([]);
-  expect(gone.previewPinnedPath).toBeNull();
-});
-
-test("la reconciliación no toca el filtro ni la vista: el conjunto de documentos es externo", () => {
+test("la reconciliación no toca el filtro ni la vista", () => {
   const state = { ...createIndexState(), filter: "notas", view: "list" as const };
   const next = reconcileIndexState(state, ["a.md"]);
   expect(next.filter).toBe("notas");
   expect(next.view).toBe("list");
-  expect(next.previewVisible).toBe(false);
-  // El estado no guarda los documentos: el modelo se reconstruye de /api/tree.
-  expect("docs" in next).toBe(false);
 });

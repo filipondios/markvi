@@ -251,25 +251,44 @@ function invalidateBlocks() {
   if (!readingElement?.isConnected) readingElement = undefined;
 }
 
-function readingBlocks() {
-  return navigationBlocks();
+const scrollMax = () => Math.max(0, document.documentElement.scrollHeight - innerHeight);
+
+/** Posición de referencia del cursor de lectura, compartida por índice y línea fuente. */
+function readingCursorY() {
+  return readingReferenceY(
+    referenceY() + scrollY,
+    statusBar.getBoundingClientRect().top + scrollY,
+    scrollY,
+    scrollMax(),
+  );
+}
+
+/** Desplaza y marca el destino para que el watchdog no lo confunda con el usuario. */
+function scrollProgrammatically(targetY: number) {
+  const destination = Math.min(scrollMax(), Math.max(0, targetY));
+  if (Math.abs(scrollY - destination) <= 1) return;
+  programmaticScrollTarget = destination;
+  scrollTo(0, destination);
+  setTimeout(() => {
+    if (programmaticScrollTarget === destination) programmaticScrollTarget = undefined;
+  }, 100);
+}
+
+/** Todo repintado que cambia bloques debe invalidarlos y actualizar el indicador. */
+function repainted() {
+  invalidateBlocks();
+  updateReadingIndicator();
 }
 
 function currentNavigationIndex() {
-  const blocks = readingBlocks();
+  const blocks = navigationBlocks();
   if (keptCursorElement) {
     const kept = blocks.findIndex((block) => block.element === keptCursorElement);
     keptCursorElement = undefined;
     if (kept >= 0) readingCursorState.set(kept, blocks.length);
   }
-  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const readingY = readingReferenceY(
-    referenceY() + scrollY,
-    statusBar.getBoundingClientRect().top + scrollY,
-    scrollY,
-    maxScroll,
-  );
-  const index = readingCursorState.current(blocks, readingY, scrollY, maxScroll);
+  const readingY = readingCursorY();
+  const index = readingCursorState.current(blocks, readingY, scrollY, scrollMax());
   return { blocks, index };
 }
 
@@ -282,13 +301,7 @@ function currentBlock() {
 function currentSourceLine() {
   const block = currentBlock();
   if (!block) return undefined;
-  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const y = readingReferenceY(
-    referenceY() + scrollY,
-    statusBar.getBoundingClientRect().top + scrollY,
-    scrollY,
-    maxScroll,
-  );
+  const y = readingCursorY();
   // Dentro del bloque se interpola; si el cursor se movió a un bloque que la
   // referencia no toca (scroll topado, clic), la línea es la de inicio del bloque.
   return y >= block.top && y <= block.bottom ? interpolateLine(block, y) : block.line;
@@ -402,15 +415,7 @@ function scrollToSourceLine(line: number) {
     else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
     else delta = 0;
   }
-  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const target = Math.min(maxScroll, Math.max(0, scrollY + delta));
-  if (Math.abs(scrollY - target) > 1) {
-    programmaticScrollTarget = target;
-    scrollTo(0, target);
-    setTimeout(() => {
-      if (programmaticScrollTarget === target) programmaticScrollTarget = undefined;
-    }, 100);
-  }
+  scrollProgrammatically(scrollY + delta);
   scheduleReadingIndicator();
 }
 
@@ -489,15 +494,7 @@ function scrollToBlock(index: number) {
   if (rect.height > visibleHeight || rect.top < visibleTop) delta = rect.top - visibleTop;
   else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
 
-  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const target = Math.min(maxScroll, Math.max(0, scrollY + delta));
-  if (Math.abs(scrollY - target) > 1) {
-    programmaticScrollTarget = target;
-    scrollTo(0, target);
-    setTimeout(() => {
-      if (programmaticScrollTarget === target) programmaticScrollTarget = undefined;
-    }, 100);
-  }
+  scrollProgrammatically(scrollY + delta);
   scheduleReadingIndicator();
 }
 
@@ -538,8 +535,7 @@ function halfPage(direction: 1 | -1) {
   const { index } = currentNavigationIndex();
   if (index < 0) return;
 
-  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
-  const targetY = Math.min(maxScroll, Math.max(0, scrollY + direction * half));
+  const targetY = Math.min(scrollMax(), Math.max(0, scrollY + direction * half));
   const wanted = pickBlockIndex(blocks, blocks[index]!.top + direction * half);
   const next = Math.min(
     blocks.length - 1,
@@ -547,13 +543,7 @@ function halfPage(direction: 1 | -1) {
   );
   readingCursorState.set(next, blocks.length);
 
-  if (Math.abs(scrollY - targetY) > 1) {
-    programmaticScrollTarget = targetY;
-    scrollTo(0, targetY);
-    setTimeout(() => {
-      if (programmaticScrollTarget === targetY) programmaticScrollTarget = undefined;
-    }, 100);
-  }
+  scrollProgrammatically(targetY);
   scheduleReadingIndicator();
 }
 
@@ -651,12 +641,7 @@ function scrollToMatch(range: Range) {
     }
     if (blockIndex >= 0) readingCursorState.set(blockIndex, blocks.length);
   }
-  const target = Math.max(0, rect.top + scrollY - referenceY());
-  programmaticScrollTarget = target;
-  scrollTo(0, target);
-  setTimeout(() => {
-    if (programmaticScrollTarget === target) programmaticScrollTarget = undefined;
-  }, 100);
+  scrollProgrammatically(rect.top + scrollY - referenceY());
   scheduleReadingIndicator();
 }
 
@@ -1821,8 +1806,7 @@ async function recreateTab(tab: Tab) {
         editable = true;
         clearSearch();
         content.replaceChildren(renderMarkdown(tab.draft, tab.path));
-        invalidateBlocks();
-        updateReadingIndicator();
+        repainted();
       }
       updateChrome();
       renderTabs();
@@ -1928,8 +1912,7 @@ async function reloadTab(tab: Tab, options: { discard?: boolean } = {}) {
         clearSearch();
         paintView(tab);
         scrollTo(0, scroll);
-        invalidateBlocks();
-        updateReadingIndicator();
+        repainted();
       }
       loading = false;
       updateChrome();
@@ -2000,8 +1983,7 @@ function discardChanges(tab: Tab) {
     clearSearch();
     if (wasDeleted) content.replaceChildren(element("p", tab.error!, "error"));
     else content.replaceChildren(renderMarkdown(tab.draft, tab.path));
-    invalidateBlocks();
-    updateReadingIndicator();
+    repainted();
     updateChrome();
     renderTabs();
   } else {
@@ -2179,8 +2161,7 @@ async function showIndex() {
   // Si hay un elemento enfocado (vuelta de un documento), que quede a la vista.
   indexList?.reveal();
   clearSearch();
-  invalidateBlocks();
-  updateReadingIndicator();
+  repainted();
   updateChrome();
 }
 
@@ -2240,8 +2221,7 @@ async function showTab(tab: Tab, scroll?: number) {
       ),
     );
     editable = false;
-    invalidateBlocks();
-    updateReadingIndicator();
+    repainted();
     updateChrome();
     renderTabs();
     return;
@@ -2264,9 +2244,7 @@ async function showTab(tab: Tab, scroll?: number) {
   if (scroll !== undefined) scrollTo(0, scroll);
   else if (location.hash && currentPath() === tab.path) scrollToHash();
   else scrollTo(0, tab.scroll);
-  invalidateBlocks();
-  readingCursorState.clear();
-  updateReadingIndicator();
+  repainted();
   if (jump) scrollToSourceLine(jump);
 }
 
@@ -2445,8 +2423,7 @@ async function refreshIndex() {
     const scroll = scrollY;
     indexList?.setEntries(indexEntries(files));
     scrollTo(0, scroll);
-    invalidateBlocks();
-    updateReadingIndicator();
+    repainted();
     notify("Index updated", "ok", 2000);
   } catch {
     // Si el árbol falla se mantiene el índice anterior.
@@ -2690,7 +2667,7 @@ function scheduleWhichKey() {
   }, 300);
 }
 
-const leaderRunners: Record<string, { label: string; run: () => void }> = {
+const leaderRunners: Record<LeaderAction, { label: string; run: () => void }> = {
   find: { label: "Find file", run: () => finder.open() },
   grep: { label: "Search text", run: () => grep.open() },
   recent: { label: "Recent files", run: () => recents.open() },
@@ -2723,7 +2700,9 @@ const leader = createLeader(
       const command = action.slice(1).trim();
       return [{ keys, label: action, run: () => void runEx(command) }];
     }
-    const runner = leaderRunners[action];
+    const runner = (LEADER_ACTIONS as readonly string[]).includes(action)
+      ? leaderRunners[action as LeaderAction]
+      : undefined;
     return runner ? [{ keys, label: runner.label, run: runner.run }] : [];
   }),
   { timeout: 0, onCancel: hideWhichKey },
@@ -3000,7 +2979,7 @@ window.addEventListener(
   "scroll",
   () => {
     const blocks = navigationBlocks();
-    const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    const maxScroll = scrollMax();
     if (programmaticScrollTarget !== undefined && Math.abs(scrollY - programmaticScrollTarget) <= 2) {
       programmaticScrollTarget = undefined;
       scheduleReadingIndicator();
@@ -3031,7 +3010,7 @@ window.addEventListener(
     if (target?.closest('[role="dialog"]')) return;
 
     const direction = event.deltaY > 0 ? 1 : -1;
-    const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    const maxScroll = scrollMax();
     const atEdge =
       maxScroll <= 1 ||
       (direction < 0 && scrollY <= 0) ||

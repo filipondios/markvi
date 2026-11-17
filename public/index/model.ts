@@ -2,8 +2,10 @@
 // relativa (la misma que devuelve /api/tree); nunca un índice de array. No
 // importa nada del DOM: lo consumen las vistas y la reconciliación.
 
-/** Proyecciones del mismo modelo de documentos. */
-export type IndexView = "list" | "directoryGraph" | "linkGraph";
+import { normalizePath, splitPath } from "../../src/paths.ts";
+
+/** Proyección del modelo de documentos que muestra la portada. */
+export type IndexView = "list";
 
 export interface IndexDoc {
   /** Ruta relativa normalizada (`/` como separador, sin `./` ni `/` inicial). */

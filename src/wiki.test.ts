@@ -47,7 +47,7 @@ test("el texto visible es el alias o «Nota > Título»", () => {
   expect(wikiLabel({ target: "A", heading: "H", alias: "x" })).toBe("x");
 });
 
-test("headingSlug coincide con los ids del render", () => {
+test("headingSlug normaliza acentos y puntuación en ids de encabezado", () => {
   expect(headingSlug("  Mi Título: ¡Hola!  ")).toBe("mi-título-hola");
   expect(headingSlug("a   b_c-d")).toBe("a-b_c-d");
 });

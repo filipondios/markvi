@@ -1,5 +1,4 @@
-// Estado compartido de la portada. Las vistas (lista, grafos) son proyecciones
-// de este estado, y la reconciliación lo mantiene coherente con el disco tras
+// Estado compartido de la portada. La reconciliación lo mantiene coherente con el disco tras
 // cada actualización del watcher. Identidad por ruta, nunca por índice.
 
 import { createDocs, indexFolders, type IndexDoc, type IndexView } from "./model.ts";
@@ -11,13 +10,8 @@ export interface IndexState {
   selectedPath: string | null;
   /** Elemento que recibe el foco de navegación (documento o carpeta, por ruta). */
   focusedNodeId: string | null;
-  /** Carpetas expandibles abiertas, por ruta. */
-  expandedPaths: string[];
   /** Filtro temporal de la lista; no se persiste inicialmente. */
   filter: string;
-  previewVisible: boolean;
-  /** `null` significa que el preview sigue a la selección. */
-  previewPinnedPath: string | null;
 }
 
 export function createIndexState(): IndexState {
@@ -25,10 +19,7 @@ export function createIndexState(): IndexState {
     view: "list",
     selectedPath: null,
     focusedNodeId: null,
-    expandedPaths: [],
     filter: "",
-    previewVisible: false,
-    previewPinnedPath: null,
   };
 }
 
@@ -59,9 +50,8 @@ function dirOf(path: string): string {
 /**
  * Reconcilia el estado con la nueva lista de archivos: la selección que sigue
  * existiendo se conserva aunque el orden cambie; si desapareció, salta al
- * documento cercano válido. El foco hace lo propio hacia la carpeta padre, y
- * las carpetas y el preview fijado ya inexistentes se descartan. Actualiza
- * `state` in situ y lo devuelve: las vistas guardan su referencia.
+ * documento cercano válido. El foco hace lo propio hacia la carpeta padre.
+ * Actualiza `state` in situ y lo devuelve: las vistas guardan su referencia.
  */
 export function reconcileIndexState(
   state: IndexState,
@@ -90,9 +80,5 @@ export function reconcileIndexState(
       ? selected
       : nearestDoc(docs, dirOf(selected)),
     focusedNodeId: focused,
-    expandedPaths: state.expandedPaths.filter((path) => folders.has(path)),
-    previewPinnedPath: state.previewPinnedPath !== null && docs.some((doc) => doc.path === state.previewPinnedPath)
-      ? state.previewPinnedPath
-      : null,
   });
 }
