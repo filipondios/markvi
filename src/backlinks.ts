@@ -1,28 +1,14 @@
 // Backlinks: líneas de otros archivos que enlazan a uno dado, ya sea con
 // `[[wiki]]` o con un enlace Markdown relativo a un `.md`.
 
-import { join, posix } from "node:path";
+import { posix } from "node:path";
 import { listMarkdown } from "./files.ts";
-import { buildHit, type SearchHit, type SearchResults } from "./search.ts";
+import type { SearchHit, SearchResults } from "./hits.ts";
+import { isMarkdownPath } from "./paths.ts";
+import { SCAN_DEFAULTS, buildHit, scanMarkdown, type ScanOptions } from "./search.ts";
 import { createWikiIndex, matchWikiLink, wikiGlobalRegExp, type WikiIndex } from "./wiki.ts";
 
-export interface BacklinkOptions {
-  /** Máximo de líneas devueltas en total. */
-  limit?: number;
-  /** Máximo de líneas por archivo. */
-  perFile?: number;
-  /** Los archivos más grandes se omiten. */
-  maxFileBytes?: number;
-  /** Archivos leídos a la vez. */
-  concurrency?: number;
-}
-
-const DEFAULTS = {
-  limit: 200,
-  perFile: 20,
-  maxFileBytes: 2 * 1024 * 1024,
-  concurrency: 16,
-};
+export type BacklinkOptions = ScanOptions;
 
 /** `[texto](destino "título")`; el destino puede ir entre `<>`. Las imágenes se descartan aparte. */
 const MARKDOWN_LINK = /!?\[[^\]\n]*\]\(\s*(<[^>\n]*>|[^)\s]*)[^)\n]*\)/g;
@@ -117,7 +103,7 @@ export function markdownTarget(destination: string, from: string): string | null
   } catch {
     // Un escape inválido se deja tal cual.
   }
-  if (!/\.md$/i.test(path)) return null;
+  if (!isMarkdownPath(path)) return null;
 
   const resolved = path.startsWith("/")
     ? posix.normalize(path.slice(1))
@@ -134,7 +120,7 @@ export function findBacklinks(
   from: string,
   to: string,
   index: WikiIndex,
-  perFile = DEFAULTS.perFile,
+  perFile = SCAN_DEFAULTS.perFile,
 ): { hits: SearchHit[]; truncated: boolean } {
   if (from === to || !MAYBE_LINKS.test(source)) return { hits: [], truncated: false };
 
@@ -167,42 +153,12 @@ export async function searchBacklinks(
   target: string,
   options: BacklinkOptions = {},
 ): Promise<SearchResults> {
-  const { limit, perFile, maxFileBytes, concurrency } = { ...DEFAULTS, ...options };
-
   const files = await listMarkdown(root);
   const index = createWikiIndex(files);
-  const results: SearchHit[] = [];
-  let full = false;
-  let capped = false;
-
-  for (let from = 0; from < files.length && !full; from += concurrency) {
-    const chunk = files.slice(from, from + concurrency);
-    const found = await Promise.all(
-      chunk.map(async (path) => {
-        if (path === target) return { hits: [], truncated: false };
-        const file = Bun.file(join(root, path));
-        try {
-          if (file.size > maxFileBytes) return { hits: [], truncated: false };
-          return findBacklinks(await file.text(), path, target, index, perFile);
-        } catch {
-          // Un archivo que desaparece o no se puede leer no rompe la búsqueda.
-          return { hits: [], truncated: false };
-        }
-      }),
-    );
-
-    for (const entry of found) {
-      for (const hit of entry.hits) {
-        if (results.length >= limit) {
-          full = true;
-          break;
-        }
-        results.push(hit);
-      }
-      if (entry.truncated) capped = true;
-      if (full) break;
-    }
-  }
-
-  return { results, truncated: full || capped };
+  return scanMarkdown(
+    root,
+    options,
+    (path, text, perFile) => findBacklinks(text, path, target, index, perFile),
+    files,
+  );
 }

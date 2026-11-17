@@ -1,23 +1,11 @@
 import { join } from "node:path";
+import { isCaseSensitive } from "./case.ts";
 import { listMarkdown } from "./files.ts";
+import type { SearchHit, SearchResults } from "./hits.ts";
 
-export interface SearchHit {
-  path: string;
-  /** Línea del archivo, empezando en 1. */
-  line: number;
-  /** Texto de la línea, sin sangría y recortado alrededor de la coincidencia. */
-  text: string;
-  /** Rangos `[desde, hasta)` de las coincidencias dentro de `text`. */
-  matches: [number, number][];
-}
+export type { SearchHit, SearchResults } from "./hits.ts";
 
-export interface SearchResults {
-  results: SearchHit[];
-  /** Hay más coincidencias de las que se devuelven. */
-  truncated: boolean;
-}
-
-export interface SearchOptions {
+export interface ScanOptions {
   /** Máximo de coincidencias devueltas en total. */
   limit?: number;
   /** Máximo de coincidencias por archivo, para que uno solo no copie la lista. */
@@ -28,7 +16,7 @@ export interface SearchOptions {
   concurrency?: number;
 }
 
-const DEFAULTS = {
+export const SCAN_DEFAULTS = {
   limit: 200,
   perFile: 20,
   maxFileBytes: 2 * 1024 * 1024,
@@ -75,7 +63,7 @@ export function buildHit(
  * ignora el caso; con alguna mayúscula lo respeta (como la búsqueda del documento).
  */
 export function searchText(path: string, text: string, query: string, perFile: number) {
-  const sensitive = query !== query.toLowerCase();
+  const sensitive = isCaseSensitive(query);
   const pattern = new RegExp(escapeRegExp(query), sensitive ? "g" : "gi");
   const hits: SearchHit[] = [];
   let truncated = false;
@@ -100,28 +88,36 @@ export function searchText(path: string, text: string, query: string, perFile: n
   return { hits, truncated };
 }
 
-export async function searchMarkdown(
-  root: string,
-  query: string,
-  options: SearchOptions = {},
-): Promise<SearchResults> {
-  const { limit, perFile, maxFileBytes, concurrency } = { ...DEFAULTS, ...options };
-  const needle = query.trim();
-  if (!needle) return { results: [], truncated: false };
+export interface ScanFileResult {
+  hits: SearchHit[];
+  truncated: boolean;
+}
 
-  const files = await listMarkdown(root);
+/**
+ * Escanea los `.md` visibles, aplica `searchFile` a cada uno y agota los límites.
+ * Compartido por el grep y los backlinks: la gestión de archivos que desaparecen,
+ * el tamaño máximo y el corte de resultados viven aquí una sola vez.
+ */
+export async function scanMarkdown(
+  root: string,
+  options: ScanOptions,
+  searchFile: (path: string, text: string, perFile: number) => ScanFileResult,
+  files?: readonly string[],
+): Promise<SearchResults> {
+  const { limit, perFile, maxFileBytes, concurrency } = { ...SCAN_DEFAULTS, ...options };
+  const allFiles = files ?? (await listMarkdown(root));
   const results: SearchHit[] = [];
   let full = false;
   let capped = false;
 
-  for (let from = 0; from < files.length && !full; from += concurrency) {
-    const chunk = files.slice(from, from + concurrency);
+  for (let from = 0; from < allFiles.length && !full; from += concurrency) {
+    const chunk = allFiles.slice(from, from + concurrency);
     const found = await Promise.all(
-      chunk.map(async (path) => {
+      chunk.map(async (path): Promise<ScanFileResult> => {
         const file = Bun.file(join(root, path));
         try {
           if (file.size > maxFileBytes) return { hits: [], truncated: false };
-          return searchText(path, await file.text(), needle, perFile);
+          return searchFile(path, await file.text(), perFile);
         } catch {
           // Un archivo que desaparece o no se puede leer no rompe la búsqueda.
           return { hits: [], truncated: false };
@@ -143,4 +139,16 @@ export async function searchMarkdown(
   }
 
   return { results, truncated: full || capped };
+}
+
+export async function searchMarkdown(
+  root: string,
+  query: string,
+  options: ScanOptions = {},
+): Promise<SearchResults> {
+  const needle = query.trim();
+  if (!needle) return { results: [], truncated: false };
+  return scanMarkdown(root, options, (path, text, perFile) =>
+    searchText(path, text, needle, perFile),
+  );
 }

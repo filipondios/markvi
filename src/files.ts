@@ -1,5 +1,6 @@
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isMarkdownPath } from "./paths.ts";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -12,7 +13,7 @@ export class HttpError extends Error {
 
 export const isIgnored = (name: string) => name.startsWith(".") || name === "node_modules";
 
-export const isMarkdown = (path: string) => path.toLowerCase().endsWith(".md");
+export const isMarkdown = isMarkdownPath;
 
 export async function listMarkdown(root: string): Promise<string[]> {
   // Mismo orden que antes (archivos de la carpeta y luego subcarpetas por nombre),

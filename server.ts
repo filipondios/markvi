@@ -3,13 +3,14 @@ import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import index from "./public/index.html";
 import { createRoutes } from "./src/api.ts";
+import { HOSTNAME, SERVER_IDLE_TIMEOUT_S } from "./src/constants.ts";
 import { loadConfig, resolveConfigPath } from "./src/config.ts";
+import { VIEW_PREFIX } from "./src/paths.ts";
 import { createFileWatcher } from "./src/watch.ts";
 
 const command =
   Bun.argv[1] && !Bun.argv[1].endsWith(".ts") ? basename(Bun.argv[1]) : "bun run server.ts";
 const USAGE = `Usage: ${command} <directory> [--port <port>] [--config <file>]`;
-const HOSTNAME = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 
 function fail(message: string): never {
@@ -65,14 +66,14 @@ function startServer() {
       hostname: HOSTNAME,
       port,
       // El flujo SSE queda abierto: debe durar más que el latido (25 s).
-      idleTimeout: 60,
+      idleTimeout: SERVER_IDLE_TIMEOUT_S,
       // Sin `development` Bun sirve el bundle sin minificar, con sourcemaps y un socket
       // HMR (y su overlay de «Runtime error»). Por defecto, bundle de producción.
       // `MARKVI_DEV=1 bun run start` recupera el modo desarrollo.
       development: Bun.env.MARKVI_DEV === "1",
       routes: {
         "/": index,
-        "/view/*": index,
+        [`${VIEW_PREFIX}*`]: index,
         ...createRoutes(root, port, watcher, configPath),
       },
       fetch() {

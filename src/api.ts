@@ -8,7 +8,19 @@ import {
   resolveNew,
   resolveWritable,
 } from "./files.ts";
+import { HOSTNAME, SSE_HEARTBEAT_MS } from "./constants.ts";
 import { loadConfig, resolveConfigPath } from "./config.ts";
+import {
+  BACKLINKS_URL,
+  CONFIG_URL,
+  EVENTS_URL,
+  FILES_PREFIX,
+  FILES_URL,
+  MOVE_URL,
+  SEARCH_URL,
+  TREE_URL,
+  normalizePath,
+} from "./paths.ts";
 import { searchBacklinks } from "./backlinks.ts";
 import { searchMarkdown } from "./search.ts";
 import type { DiskEvent, FileWatcher } from "./watch.ts";
@@ -25,8 +37,6 @@ const RAW_HEADERS = {
   "X-Content-Type-Options": "nosniff",
 };
 
-const FILES_PREFIX = "/files/";
-const HEARTBEAT_MS = 25_000;
 const MAX_QUERY = 200;
 
 // Identifica el contenido que el cliente leyó. No es criptográfico: solo sirve
@@ -40,8 +50,9 @@ export function createRoutes(
   configPath = resolveConfigPath(undefined),
 ) {
   const suffix = port === 80 ? "" : `:${port}`;
-  const hosts = new Set([`127.0.0.1${suffix}`, `localhost${suffix}`]);
-  const origins = new Set([`http://127.0.0.1${suffix}`, `http://localhost${suffix}`]);
+  const names = [HOSTNAME, "localhost"];
+  const hosts = new Set(names.map((name) => `${name}${suffix}`));
+  const origins = new Set(names.map((name) => `http://${name}${suffix}`));
 
   // Comprobar Host evita ataques de DNS rebinding desde otras webs.
   const guard = (handler: Handler): Handler => async (req) => {
@@ -125,7 +136,7 @@ export function createRoutes(
           } catch {
             cleanup?.();
           }
-        }, HEARTBEAT_MS);
+        }, SSE_HEARTBEAT_MS);
 
         cleanup = () => {
           clearInterval(heartbeat);
@@ -154,10 +165,10 @@ export function createRoutes(
   }
 
   return {
-    "/api/tree": {
+    [TREE_URL]: {
       GET: guard(async () => Response.json({ files: await listMarkdown(root) }, { headers: NO_STORE })),
     },
-    "/api/file": {
+    [FILES_URL]: {
       GET: guard(async (req) => {
         const file = await markdownFile(req);
         const content = await Bun.file(file).text();
@@ -231,7 +242,7 @@ export function createRoutes(
       }),
     },
     // Renombra o mueve un archivo. El destino no puede existir.
-    "/api/move": {
+    [MOVE_URL]: {
       POST: guard(async (req) => {
         const body = (await req.json().catch(() => null)) as { from?: unknown; to?: unknown } | null;
         const from = body?.from;
@@ -252,10 +263,10 @@ export function createRoutes(
     },
     // Búsqueda de texto en todos los archivos Markdown (live grep).
     // La configuración se lee en cada petición: recargar la página aplica los cambios.
-    "/api/config": {
+    [CONFIG_URL]: {
       GET: guard(async () => Response.json(await loadConfig(configPath), { headers: NO_STORE })),
     },
-    "/api/search": {
+    [SEARCH_URL]: {
       GET: guard(async (req) => {
         const query = (new URL(req.url).searchParams.get("q") ?? "").trim();
         if (query.length > MAX_QUERY) throw new HttpError(400, "The query is too long.");
@@ -263,15 +274,16 @@ export function createRoutes(
       }),
     },
     // Líneas de otros archivos que enlazan a `path` (`[[wiki]]` o enlaces Markdown).
-    "/api/backlinks": {
+    [BACKLINKS_URL]: {
       GET: guard(async (req) => {
         await markdownFile(req);
         const path = new URL(req.url).searchParams.get("path") ?? "";
-        const target = posix.normalize(path.replace(/\\/g, "/")).replace(/^\.\//, "");
-        return Response.json(await searchBacklinks(root, target), { headers: NO_STORE });
+        return Response.json(await searchBacklinks(root, posix.normalize(normalizePath(path))), {
+          headers: NO_STORE,
+        });
       }),
     },
-    "/api/events": {
+    [EVENTS_URL]: {
       GET: guard((req) => events(req)),
     },
     [`${FILES_PREFIX}*`]: {
