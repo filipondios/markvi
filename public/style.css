@@ -6,142 +6,6 @@
   src: url("./fonts/ObelMono-VF.woff2") format("woff2");
 }
 
-:root {
-  color-scheme: light dark;
-
-  /* Superficies */
-  --bg: #ffffff;
-  --surface: #f6f8fa;
-  --surface-raised: #ffffff;
-  --surface-sunken: #eef1f4;
-  --overlay: rgba(15, 20, 25, 0.45);
-
-  /* Texto */
-  --fg: #1f2328;
-  --muted: #59636e;
-  --faint: #8b949e;
-
-  /* Bordes y sombras */
-  --border: #d1d9e0;
-  --border-strong: #b6c0ca;
-  --shadow: 0 18px 50px rgba(31, 35, 40, 0.18);
-
-  /* Énfasis y estado */
-  --accent: #0969da;
-  --accent-fg: #ffffff;
-  --link: #0969da;
-  --error: #cf222e;
-  --warn: #9a6700;
-  --ok: #116329;
-
-  /* Modos Vim */
-  --mode-normal: #0969da;
-  --mode-insert: #116329;
-  --mode-visual: #8250df;
-  --mode-replace: #9a6700;
-  --mode-view: #59636e;
-  --mode-index: #59636e;
-
-  /* Tipografía del chrome; el Markdown y el código no la usan. */
-  --font-mono: "Obel Mono", ui-monospace, "Cascadia Code", "Roboto Mono", monospace;
-
-  /* Código */
-  --hl-keyword: #cf222e;
-  --hl-string: #0a3069;
-  --hl-number: #0550ae;
-  --hl-title: #8250df;
-  --hl-type: #953800;
-  --hl-name: #116329;
-  --hl-add: #116329;
-  --hl-del: #82071e;
-}
-
-/* Tema oscuro: el del sistema (salvo que se fije «light») o el forzado desde la
-   configuración con `theme = "dark"` (atributo `data-theme` de <html>). */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0d1117;
-    --surface: #151b23;
-    --surface-raised: #1c232c;
-    --surface-sunken: #0a0e13;
-    --overlay: rgba(0, 0, 0, 0.6);
-
-    --fg: #e6edf3;
-    --muted: #9198a1;
-    --faint: #6e7681;
-
-    --border: #3d444d;
-    --border-strong: #545d68;
-    --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
-
-    --accent: #4493f8;
-    --accent-fg: #0d1117;
-    --link: #4493f8;
-    --error: #f85149;
-    --warn: #d29922;
-    --ok: #7ee787;
-
-    --mode-normal: #4493f8;
-    --mode-insert: #7ee787;
-    --mode-visual: #d2a8ff;
-    --mode-replace: #d29922;
-    --mode-view: #9198a1;
-    --mode-index: #9198a1;
-
-    --hl-keyword: #ff7b72;
-    --hl-string: #a5d6ff;
-    --hl-number: #79c0ff;
-    --hl-title: #d2a8ff;
-    --hl-type: #ffa657;
-    --hl-name: #7ee787;
-    --hl-add: #7ee787;
-    --hl-del: #ffa198;
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0d1117;
-  --surface: #151b23;
-  --surface-raised: #1c232c;
-  --surface-sunken: #0a0e13;
-  --overlay: rgba(0, 0, 0, 0.6);
-
-  --fg: #e6edf3;
-  --muted: #9198a1;
-  --faint: #6e7681;
-
-  --border: #3d444d;
-  --border-strong: #545d68;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
-
-  --accent: #4493f8;
-  --accent-fg: #0d1117;
-  --link: #4493f8;
-  --error: #f85149;
-  --warn: #d29922;
-  --ok: #7ee787;
-
-  --mode-normal: #4493f8;
-  --mode-insert: #7ee787;
-  --mode-visual: #d2a8ff;
-  --mode-replace: #d29922;
-  --mode-view: #9198a1;
-  --mode-index: #9198a1;
-
-  --hl-keyword: #ff7b72;
-  --hl-string: #a5d6ff;
-  --hl-number: #79c0ff;
-  --hl-title: #d2a8ff;
-  --hl-type: #ffa657;
-  --hl-name: #7ee787;
-  --hl-add: #7ee787;
-  --hl-del: #ffa198;
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-}
 
 * {
   box-sizing: border-box;
@@ -1449,20 +1313,51 @@ pre code {
    Markvi editorial: superficies planas, geometría ortogonal y lectura serena.
    ------------------------------------------------------------------------- */
 :root {
+  color-scheme: light dark;
+
   --bg: #fbfaf7;
   --surface: #f1efe9;
   --surface-raised: #fffefa;
   --surface-sunken: #e9e6de;
+  --overlay: rgba(15, 20, 25, 0.45);
   --fg: #282722;
   --muted: #68665e;
   --faint: #918e84;
   --border: #d8d4ca;
   --border-strong: #aaa598;
+  --shadow: 0 12px 32px rgba(42, 39, 31, .10);
   --accent: #315b50;
   --accent-fg: #fffefa;
   --link: #315b50;
-  --shadow: 0 12px 32px rgba(42, 39, 31, .10);
+  --error: #cf222e;
+  --warn: #9a6700;
+  --ok: #116329;
+
+  /* Modos Vim */
+  --mode-normal: #0969da;
+  --mode-insert: #116329;
+  --mode-visual: #8250df;
+  --mode-replace: #9a6700;
+  --mode-view: #59636e;
+  --mode-index: #59636e;
+
+  /* Tipografía del chrome; el Markdown y el código no la usan. */
+  --font-mono: "Obel Mono", ui-monospace, "Cascadia Code", "Roboto Mono", monospace;
   --font-reading: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+
+  /* Código */
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-title: #8250df;
+  --hl-type: #953800;
+  --hl-name: #116329;
+  --hl-add: #116329;
+  --hl-del: #82071e;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 /* Nada de píldoras: el lenguaje visual usa ángulos rectos de forma consistente. */
@@ -1720,30 +1615,69 @@ body {
     --surface: #191c18;
     --surface-raised: #1e211c;
     --surface-sunken: #0b0d0a;
+    --overlay: rgba(0, 0, 0, 0.6);
     --fg: #e9e7df;
     --muted: #b0ada2;
     --faint: #858277;
     --border: #41443b;
     --border-strong: #66695d;
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
     --accent: #9ab9a7;
     --accent-fg: #11130f;
     --link: #a8c7b4;
+    --error: #f85149;
+    --warn: #d29922;
+    --ok: #7ee787;
+    --mode-normal: #4493f8;
+    --mode-insert: #7ee787;
+    --mode-visual: #d2a8ff;
+    --mode-replace: #d29922;
+    --mode-view: #9198a1;
+    --mode-index: #9198a1;
+    --hl-keyword: #ff7b72;
+    --hl-string: #a5d6ff;
+    --hl-number: #79c0ff;
+    --hl-title: #d2a8ff;
+    --hl-type: #ffa657;
+    --hl-name: #7ee787;
+    --hl-add: #7ee787;
+    --hl-del: #ffa198;
   }
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #11130f;
   --surface: #191c18;
   --surface-raised: #1e211c;
   --surface-sunken: #0b0d0a;
+  --overlay: rgba(0, 0, 0, 0.6);
   --fg: #e9e7df;
   --muted: #b0ada2;
   --faint: #858277;
   --border: #41443b;
   --border-strong: #66695d;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   --accent: #9ab9a7;
   --accent-fg: #11130f;
   --link: #a8c7b4;
+  --error: #f85149;
+  --warn: #d29922;
+  --ok: #7ee787;
+  --mode-normal: #4493f8;
+  --mode-insert: #7ee787;
+  --mode-visual: #d2a8ff;
+  --mode-replace: #d29922;
+  --mode-view: #9198a1;
+  --mode-index: #9198a1;
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-title: #d2a8ff;
+  --hl-type: #ffa657;
+  --hl-name: #7ee787;
+  --hl-add: #7ee787;
+  --hl-del: #ffa198;
 }
 
 :root[data-theme="dark"] #content :not(pre) > code {
