@@ -40,6 +40,7 @@ import {
   type BlockBox,
 } from "./lines.ts";
 import { normalizeNewPath } from "../src/paths.ts";
+import { createEventHub, type DiskEvent } from "./events.ts";
 import {
   alternatePath,
   parseRecent,
@@ -116,11 +117,6 @@ interface Tab {
   etag?: string;
   /** El archivo cambió o desapareció en disco mientras había cambios locales. */
   conflict?: "changed" | "deleted";
-}
-
-interface DiskEvent {
-  type: "change" | "delete";
-  path: string;
 }
 
 
@@ -2476,27 +2472,27 @@ async function handleDiskChange(event: DiskEvent) {
   }
 }
 
+// Solo una ventana del navegador mantiene abierto el flujo SSE y reparte los
+// eventos a las demás (ver events.ts): el límite de 6 conexiones por servidor
+// bloqueaba la séptima ventana.
 function connectEvents() {
-  const source = new EventSource(EVENTS_URL);
+  createEventHub({
+    url: EVENTS_URL,
+    onEvent: (event) => void handleDiskChange(event),
+    onResync(full) {
+      // Al conectar (o reconectar) se revisa el índice: puede haberse perdido algún
+      // evento entre la carga inicial y la apertura del flujo.
+      if (!active) void refreshIndex();
+      if (!full) return;
 
-  // Al conectar (o reconectar) se revisa el índice: puede haberse perdido algún
-  // evento entre la carga inicial y la apertura del flujo.
-  source.addEventListener("open", () => {
-    if (!active) void refreshIndex();
-  });
-
-  source.addEventListener("message", (message) => {
-    let event: unknown;
-    try {
-      event = JSON.parse(message.data);
-    } catch {
-      return;
-    }
-    if (!event || typeof event !== "object") return;
-
-    const { type, path } = event as { type?: unknown; path?: unknown };
-    if ((type !== "change" && type !== "delete") || typeof path !== "string") return;
-    void handleDiskChange({ type, path });
+      // Reconexión, o esta ventana heredó el flujo de otra que se cerró: los
+      // eventos de ese intervalo se perdieron. Se revisan los archivos abiertos
+      // contra el disco (sin cambios no se repinta nada; ver `reloadTab`).
+      scheduleWikiRefresh();
+      for (const tab of tabs) {
+        if (tab.loaded) void handleDiskChange({ type: "change", path: tab.path });
+      }
+    },
   });
 }
 
