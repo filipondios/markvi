@@ -136,6 +136,12 @@ Invalid values never stop the app: they are ignored, the first problem is shown 
 
 A guided tour of the app lives in the [`example` directory](./example): run `bun run server.ts ./example` and open `index.md`.
 
+## Unsaved changes and symbolic links
+
+**Draft recovery.** While you edit, MarkVi keeps a backup of unsaved text in the browser's `localStorage` (written about half a second after you stop typing, and immediately when the page is hidden or closed). If the browser closes, crashes or reloads, the draft comes back the next time you open that file and a message says so; `:w` saves it and `:q!` discards it. If the file changed on disk in the meantime, the draft is restored as a conflict (`Reload` / `Overwrite`) instead of overwriting anything. Backups are removed when you save or discard, expire after 30 days, and files over about 1 M characters are not backed up (you get a warning). A draft that belongs to another window that is still open is never taken over.
+
+**Symbolic links.** A link whose real target is inside the served folder (and not hidden) behaves like the file or folder it points to: it is listed, searched, linked with `[[wiki]]` and live-reloaded. Links that leave the folder, are broken, loop, or point to something that is not a `.md` file are ignored and refused, as before. `:mv` and `:rm` on a link act on the link itself, never on its target.
+
 ## Rendering Extras
 
 Three optional extras, all enabled by default. Disable any of them under `[render]` in `config.toml` (`footnotes`, `alerts`, `frontmatter`) to get the plain rendering back; reload the browser to apply.
