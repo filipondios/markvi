@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from "node:fs";
-import { stat } from "node:fs/promises";
+import { lstat, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { isIgnored, isMarkdown, listMarkdown } from "./files.ts";
+import { isIgnored, isMarkdown, listMarkdownEntries, type MarkdownEntry } from "./files.ts";
 
 export type DiskEventType = "change" | "delete";
 
@@ -32,9 +32,24 @@ export function createFileWatcher(root: string): FileWatcher {
   // nueva, no de la antigua) o se mueve fuera del raíz (no avisa de ninguno). Con
   // este conjunto se averigua qué archivos desaparecieron o aparecieron.
   const known = new Set<string>();
-  const ready = listMarkdown(root).then(
-    (files) => {
-      for (const file of files) known.add(file);
+  // Rutas que llegan a un mismo archivo por enlaces simbólicos: `fs.watch` solo
+  // nombra la ruta real, y quien tenga abierta la del enlace también debe enterarse.
+  let aliasesOf = new Map<string, string[]>();
+
+  const indexAliases = (entries: readonly MarkdownEntry[]) => {
+    aliasesOf = new Map();
+    for (const { path, real } of entries) {
+      if (!real) continue;
+      const list = aliasesOf.get(real);
+      if (list) list.push(path);
+      else aliasesOf.set(real, [path]);
+    }
+  };
+
+  const ready = listMarkdownEntries(root).then(
+    (entries) => {
+      for (const entry of entries) known.add(entry.path);
+      indexAliases(entries);
     },
     () => {
       // Sin la lista inicial solo se pierde la detección por carpetas.
@@ -69,7 +84,9 @@ export function createFileWatcher(root: string): FileWatcher {
       do {
         again = false;
         await ready;
-        const current = new Set(await listMarkdown(root));
+        const entries = await listMarkdownEntries(root);
+        indexAliases(entries);
+        const current = new Set(entries.map((entry) => entry.path));
         for (const path of [...known]) {
           if (!current.has(path)) emit({ type: "delete", path });
         }
@@ -106,10 +123,19 @@ export function createFileWatcher(root: string): FileWatcher {
 
   const scheduleFile = (path: string) => {
     later(path, async () => {
+      // Un enlace nuevo (o cambiado) altera qué rutas llegan a cada archivo.
+      if ((await lstat(join(root, path)).catch(() => null))?.isSymbolicLink()) await reconcile();
+
       const info = await stat(join(root, path)).catch(() => null);
       // Una carpeta con nombre `*.md` no es un archivo: se trata como carpeta.
       if (info?.isDirectory()) return reconcile();
-      emit({ type: info?.isFile() ? "change" : "delete", path });
+      const type: DiskEventType = info?.isFile() ? "change" : "delete";
+      emit({ type, path });
+
+      // Quien tenga abierto el archivo por un enlace simbólico recibe el mismo aviso.
+      for (const alias of aliasesOf.get(path) ?? []) {
+        if (known.has(alias)) emit({ type, path: alias });
+      }
     });
   };
 

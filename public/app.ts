@@ -40,6 +40,13 @@ import {
   type BlockBox,
 } from "./lines.ts";
 import { normalizeNewPath } from "../src/paths.ts";
+import {
+  createDraftStore,
+  decideRecovery,
+  holdWindowLock,
+  isWindowAlive,
+  type WindowLocks,
+} from "./drafts.ts";
 import { createEventHub, type DiskEvent } from "./events.ts";
 import {
   alternatePath,
@@ -117,11 +124,83 @@ interface Tab {
   etag?: string;
   /** El archivo cambió o desapareció en disco mientras había cambios locales. */
   conflict?: "changed" | "deleted";
+  /** Borrador recuperado de una sesión anterior, pendiente de avisar al usuario. */
+  recovered?: { at: number; stale: boolean };
 }
 
 
 const STORAGE_KEY = "markvi:tabs";
 const RECENT_KEY = "markvi:recent";
+
+// Copia de seguridad de los borradores sin guardar (ver drafts.ts): se escribe en
+// `localStorage` mientras se edita y se ofrece al volver a abrir el archivo.
+const windowId =
+  globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const windowLocks = ((navigator as { locks?: unknown }).locks ?? null) as WindowLocks | null;
+holdWindowLock(windowId, windowLocks);
+
+const drafts = createDraftStore(
+  (() => {
+    try {
+      return localStorage;
+    } catch {
+      return null;
+    }
+  })(),
+  {
+    owner: windowId,
+    onProblem(problem, path) {
+      notify(
+        problem === "too-large"
+          ? `${path} is too large to back up: save often (:w)`
+          : "Could not back up unsaved changes: browser storage is full",
+        "warn",
+        6000,
+      );
+    },
+  },
+);
+drafts.sweep();
+
+/** Mantiene la copia de seguridad igual que el estado de la pestaña. */
+function trackDraft(tab: Tab) {
+  // Una pestaña sin cargar no sabe aún si tiene cambios: su copia se respeta.
+  if (!tab.loaded) return;
+  if (tab.dirty) drafts.save(tab.path, tab.draft, tab.etag ?? null);
+  else drafts.clear(tab.path);
+}
+
+async function recoverDraft(tab: Tab, disk: { text: string; etag?: string }) {
+  const stored = drafts.load(tab.path);
+  if (!stored) return;
+
+  // Si la ventana que la guardó sigue abierta es su borrador en curso, no uno perdido.
+  const alive = stored.owner !== windowId && (await isWindowAlive(stored.owner, windowLocks));
+  const outcome = decideRecovery(stored, disk, alive);
+  if (outcome.kind === "discard") drafts.remove(tab.path);
+  if (outcome.kind !== "restore") return;
+
+  tab.draft = outcome.text;
+  tab.dirty = true;
+  // Si el archivo cambió desde entonces se ofrece Reload / Overwrite, como siempre.
+  tab.conflict = outcome.stale ? "changed" : undefined;
+  tab.recovered = { at: outcome.at, stale: outcome.stale };
+  trackDraft(tab);
+}
+
+function announceRecovery(tab: Tab) {
+  const info = tab.recovered;
+  tab.recovered = undefined;
+  if (!info) return;
+  const when = new Date(info.at).toLocaleString();
+  notify(
+    info.stale
+      ? `Recovered unsaved changes from ${when}. The file also changed on disk: Reload or Overwrite.`
+      : `Recovered unsaved changes from ${when}. :w saves them, :q! discards them.`,
+    "warn",
+    0,
+  );
+}
 
 // Archivos visitados, el más reciente primero (para `space + r` y `Ctrl-^`).
 let recent = loadRecent();
@@ -969,6 +1048,7 @@ async function commitTask(item: HTMLElement) {
   refreshTaskCounts();
   updateChrome();
   syncTabState();
+  trackDraft(tab);
 
   // Con cambios sin guardar no se escribe nada: se guardaría también lo demás.
   if (wasDirty) {
@@ -1342,6 +1422,9 @@ function resetTab(tab: Tab) {
 }
 
 function persistTabs() {
+  // Casi toda transición (guardar, descartar, recargar, cerrar) acaba aquí: la copia
+  // de seguridad de cada pestaña queda igual que su estado.
+  for (const tab of tabs) trackDraft(tab);
   try {
     const stored = tabs.map((tab) => ({ path: tab.path, mode: tab.mode }));
     localStorage.setItem(STORAGE_KEY, serializeTabs(stored));
@@ -1693,6 +1776,7 @@ function enterEditor(tab: Tab, options: { cursor?: number; screenY?: number } = 
       tab.dirty = value !== tab.raw;
       updateChrome();
       syncTabState();
+      trackDraft(tab);
     },
     onSave: () => saveDraft(tab),
     onExit: (options) => exitEditor(tab, options),
@@ -2187,6 +2271,8 @@ async function showTab(tab: Tab, scroll?: number) {
       tab.loaded = true;
       tab.error = undefined;
       tab.conflict = undefined;
+      // Primera carga de la sesión: puede haber un borrador que se perdió.
+      if (!tab.dirty) await recoverDraft(tab, file);
     } catch (error) {
       if (id !== request) return;
       tab.error = error instanceof Error ? error.message : String(error);
@@ -2225,6 +2311,7 @@ async function showTab(tab: Tab, scroll?: number) {
 
   editable = true;
   visit(tab.path);
+  announceRecovery(tab);
   const jump = takeJump(tab.path);
   if (tab.mode === "edit") {
     if (jump) tab.cursor = cursorForLine(tab.draft, jump);
@@ -2325,6 +2412,7 @@ function closeTab(tab: Tab, options: { force?: boolean } = {}) {
   if (wasActive && editor) leaveEditor();
 
   tabs.splice(index, 1);
+  drafts.clear(tab.path);
   persistTabs();
 
   if (!wasActive) {
@@ -2832,7 +2920,15 @@ promptInput.addEventListener("keydown", (event) => {
   }
 });
 
+// La copia de seguridad se escribe con retardo: al ocultar o cerrar la página se
+// escribe lo pendiente sin esperar.
+window.addEventListener("pagehide", () => drafts.flush());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") drafts.flush();
+});
+
 window.addEventListener("beforeunload", (event) => {
+  drafts.flush();
   if (!tabs.some((tab) => tab.dirty)) return;
   event.preventDefault();
   event.returnValue = "";

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { isCaseSensitive } from "./case.ts";
-import { listMarkdown } from "./files.ts";
+import { listMarkdownEntries, uniquePaths } from "./files.ts";
 import type { SearchHit, SearchResults } from "./hits.ts";
 
 export type { SearchHit, SearchResults } from "./hits.ts";
@@ -105,7 +105,7 @@ export async function scanMarkdown(
   files?: readonly string[],
 ): Promise<SearchResults> {
   const { limit, perFile, maxFileBytes, concurrency } = { ...SCAN_DEFAULTS, ...options };
-  const allFiles = files ?? (await listMarkdown(root));
+  const allFiles = files ?? uniquePaths(await listMarkdownEntries(root));
   const results: SearchHit[] = [];
   let full = false;
   let capped = false;

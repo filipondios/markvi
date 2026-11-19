@@ -1,10 +1,11 @@
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
-import { dirname, posix } from "node:path";
+import { lstat, mkdir, rename, stat, symlink, unlink } from "node:fs/promises";
+import { dirname, posix, relative } from "node:path";
 import { createFileExclusive, withFileLock, writeFileAtomic } from "./atomic.ts";
 import {
   HttpError,
   isMarkdown,
   listMarkdown,
+  resolveEntry,
   resolveFile,
   resolveNew,
   resolveWritable,
@@ -100,6 +101,12 @@ export function createRoutes(
     const file = await resolveFile(root, new URL(req.url).searchParams.get("path"));
     if (!isMarkdown(file)) throw new HttpError(400, "Only .md files are supported.");
     return file;
+  }
+
+  async function markdownEntry(req: Request) {
+    const found = await resolveEntry(root, new URL(req.url).searchParams.get("path"));
+    if (!isMarkdown(found.real)) throw new HttpError(400, "Only .md files are supported.");
+    return found;
   }
 
   async function writableMarkdown(req: Request) {
@@ -234,7 +241,8 @@ export function createRoutes(
         });
       }),
       DELETE: guard(async (req) => {
-        const file = await markdownFile(req);
+        // `file` es el contenido (el destino de un enlace); `entry`, lo que se borra.
+        const { real: file, entry } = await markdownEntry(req);
         const ifMatch = req.headers.get("if-match");
 
         return withFileLock(file, async () => {
@@ -248,7 +256,7 @@ export function createRoutes(
             }
           }
 
-          await unlink(file);
+          await unlink(entry);
           return new Response(null, { status: 204, headers: NO_STORE });
         });
       }),
@@ -266,12 +274,21 @@ export function createRoutes(
           throw new HttpError(400, "Only .md files are supported.");
         }
 
-        const source = await resolveFile(root, from);
+        const { real, entry } = await resolveEntry(root, from);
         const target = await resolveNew(root, to);
         await mkdir(dirname(target), { recursive: true });
         // Un guardado en curso sobre el origen debe acabar antes de moverlo: si no,
         // su rename recrearía el archivo en la ruta antigua.
-        await withFileLock(source, () => rename(source, target));
+        await withFileLock(real, async () => {
+          if ((await lstat(entry)).isSymbolicLink()) {
+            // Se mueve el enlace, no su destino. Un enlace relativo cambiaría de
+            // significado en otra carpeta: se recrea apuntando al mismo archivo.
+            await symlink(relative(dirname(target), real), target);
+            await unlink(entry);
+          } else {
+            await rename(entry, target);
+          }
+        });
         return new Response(null, { status: 204, headers: NO_STORE });
       }),
     },

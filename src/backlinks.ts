@@ -2,7 +2,7 @@
 // `[[wiki]]` o con un enlace Markdown relativo a un `.md`.
 
 import { posix } from "node:path";
-import { listMarkdown } from "./files.ts";
+import { listMarkdownEntries, uniquePaths } from "./files.ts";
 import type { SearchHit, SearchResults } from "./hits.ts";
 import { isMarkdownPath } from "./paths.ts";
 import { SCAN_DEFAULTS, buildHit, scanMarkdown, type ScanOptions } from "./search.ts";
@@ -153,12 +153,14 @@ export async function searchBacklinks(
   target: string,
   options: BacklinkOptions = {},
 ): Promise<SearchResults> {
-  const files = await listMarkdown(root);
-  const index = createWikiIndex(files);
+  const entries = await listMarkdownEntries(root);
+  // Los nombres `[[wiki]]` se resuelven contra todas las rutas (también los enlaces
+  // simbólicos); cada archivo se lee una sola vez, aunque tenga varias rutas.
+  const index = createWikiIndex(entries.map((entry) => entry.path));
   return scanMarkdown(
     root,
     options,
     (path, text, perFile) => findBacklinks(text, path, target, index, perFile),
-    files,
+    uniquePaths(entries),
   );
 }
