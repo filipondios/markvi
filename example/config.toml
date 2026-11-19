@@ -26,6 +26,7 @@
 # footnotes = true    # GFM footnotes: `[^1]` references and a notes section
 # alerts = true       # GitHub alerts: `> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`
 # frontmatter = true  # YAML front matter (`--- … ---`) is separated, not rendered
+# remoteimages = false # load images from other sites (off: a .md cannot make external requests)
 
 # Leader shortcuts: the keys pressed after the leader key.
 # Actions: find, grep, recent, alternate, toc, backlinks, close.
