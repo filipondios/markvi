@@ -140,6 +140,8 @@ A guided tour of the app lives in the [`example` directory](./example): run `bun
 
 Three optional extras, all enabled by default. Disable any of them under `[render]` in `config.toml` (`footnotes`, `alerts`, `frontmatter`) to get the plain rendering back; reload the browser to apply.
 
+For safety, HTML inside a Markdown file is sanitized: `<style>`, forms and form fields are removed, risky inline styles are dropped, and images or media hosted on other sites are **not loaded** (they show their alt text and can be re-enabled with `remoteimages = true` under `[render]`). Local images, task checkboxes and links keep working.
+
 | Extra | Syntax | Rendering |
 | ----- | ------ | --------- |
 | Footnotes | `[^1]` in the text and `[^1]: definition` anywhere | Superscript link to a notes section at the end, with back-references |
