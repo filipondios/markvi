@@ -48,6 +48,18 @@ test("lee tema, fuente, líder y opciones del editor", () => {
   expect(config.editor).toEqual({ number: false, relativenumber: true, scrolloff: 5 });
 });
 
+test("las imágenes remotas están desactivadas por omisión y se activan con [render]", () => {
+  expect(defaultConfig().render.remoteimages).toBe(false);
+  expect(defaultConfig().render.footnotes).toBe(true);
+
+  const { config, warnings } = parseConfig(`
+    [render]
+    remoteimages = true
+  `);
+  expect(warnings).toEqual([]);
+  expect(config.render.remoteimages).toBe(true);
+});
+
 test("[render] activa y desactiva los extras; lo no válido avisa", () => {
   const { config, warnings } = parseConfig(`
     [render]
@@ -56,7 +68,12 @@ test("[render] activa y desactiva los extras; lo no válido avisa", () => {
     frontmatter = false
   `);
   expect(warnings).toEqual([]);
-  expect(config.render).toEqual({ footnotes: false, alerts: false, frontmatter: false });
+  expect(config.render).toEqual({
+    footnotes: false,
+    alerts: false,
+    frontmatter: false,
+    remoteimages: false,
+  });
 
   const bad = parseConfig(`
     [render]

@@ -45,13 +45,24 @@ export function lineStartOffset(starts: readonly number[], line: number): number
   return starts[index] ?? 0;
 }
 
-/** Añade `line` y `endLine` a los tokens de marked, en orden de documento. */
-export function annotateTokenLines(tokens: readonly LineToken[], source: string): void {
+/**
+ * Añade `line` y `endLine` a los tokens de marked, en orden de documento.
+ *
+ * `skip` son los caracteres iniciales de `source` que el lexer no vio (el front
+ * matter): la búsqueda empieza después. Sin él, un bloque cuyo texto coincide con
+ * una línea del YAML se localizaría dentro del front matter.
+ */
+export function annotateTokenLines(
+  tokens: readonly LineToken[],
+  source: string,
+  skip = 0,
+): void {
   // marked normaliza los finales de línea en `raw`; se busca sobre una copia
   // normalizada para que CRLF no desplace las líneas.
   const flat = source.replace(/\r\n?/g, "\n");
   const starts = lineStarts(flat);
-  let cursor = 0;
+  // `skip` se mide en el texto original: se pasa a coordenadas del normalizado.
+  let cursor = skip > 0 ? source.slice(0, skip).replace(/\r\n?/g, "\n").length : 0;
 
   for (const token of tokens) {
     // marked-footnote antepone un token `footnotes` cuyo `raw` («Footnotes») no

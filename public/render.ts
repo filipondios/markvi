@@ -101,6 +101,31 @@ marked.use({
 
 let wikiIndex: WikiIndex | null = null;
 
+// --- Política de sanitizado ---------------------------------------------------
+// El HTML de un `.md` ajeno no debe poder cambiar el aspecto de la aplicación
+// (`<style>`, estilos en línea de posición fija) ni pedir datos al usuario
+// (`<form>` y campos): sería phishing dentro de una página de confianza.
+// Las casillas de tareas (`<input type="checkbox">`) sí se conservan.
+const FORBID_TAGS = ["style", "form", "button", "select", "option", "textarea", "fieldset"];
+
+// Estilos en línea que cargan recursos, superponen contenido o ejecutan código.
+const RISKY_STYLE = /url\s*\(|@import|expression\s*\(|position\s*:\s*(?:fixed|sticky|absolute)/i;
+
+DOMPurify.addHook("uponSanitizeElement", (node) => {
+  if (node.nodeName !== "INPUT") return;
+  const type = (node as Element).getAttribute("type")?.toLowerCase();
+  if (type !== "checkbox") node.parentNode?.removeChild(node);
+});
+
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "style" && RISKY_STYLE.test(data.attrValue)) data.keepAttr = false;
+});
+
+const SANITIZE_CONFIG = {
+  RETURN_DOM_FRAGMENT: true as const,
+  FORBID_TAGS,
+};
+
 /** Lista de archivos `.md` contra la que se resuelven los enlaces [[wiki]]. */
 export function setWikiFiles(files: readonly string[]) {
   wikiIndex = createWikiIndex(files);
@@ -112,9 +137,15 @@ export interface RenderExtrasOptions {
   footnotes: boolean;
   alerts: boolean;
   frontmatter: boolean;
+  remoteimages: boolean;
 }
 
-let extras: RenderExtrasOptions = { footnotes: false, alerts: true, frontmatter: true };
+let extras: RenderExtrasOptions = {
+  footnotes: false,
+  alerts: true,
+  frontmatter: true,
+  remoteimages: false,
+};
 let footnotesRegistered = false;
 
 export function setRenderOptions(options: RenderExtrasOptions) {
@@ -152,7 +183,7 @@ export function renderMarkdown(
   const tokens = marked.lexer(body);
   const walk = marked.defaults.walkTokens;
   if (walk) marked.walkTokens(tokens, walk);
-  annotateTokenLines(tokens as unknown as LineToken[], source);
+  annotateTokenLines(tokens as unknown as LineToken[], source, source.length - body.length);
 
   // El contenido de un <template> es inerte: las imágenes no se piden hasta
   // insertarlo, ya con las URLs reescritas. DOMPurify devuelve el DOM ya limpio (en
@@ -162,9 +193,10 @@ export function renderMarkdown(
   // ataques de mutación (mXSS).
   const template = document.createElement("template");
   template.content.append(
-    DOMPurify.sanitize(marked.parser(tokens), { RETURN_DOM_FRAGMENT: true }),
+    DOMPurify.sanitize(marked.parser(tokens), SANITIZE_CONFIG),
   );
   const content = template.content;
+  if (!extras.remoteimages) blockRemoteResources(content, path);
   rewriteUrls(content, path);
   refreshWikiLinks(content, path);
   markTaskItems(content, options.interactive === true);
@@ -211,6 +243,48 @@ function resolveUrl(value: string, base: URL) {
     return fromRoot ? new URL(`.${value}`, new URL(VIEW_PREFIX, base)) : new URL(value, base);
   } catch {
     return null;
+  }
+}
+
+// Elementos que el navegador carga solo al insertarlos (sin que el usuario pulse
+// nada). Los enlaces `<a>` no se tocan: solo se siguen al hacer clic.
+const AUTO_LOADED = "img, source, video, audio, track, image, use";
+const RESOURCE_ATTRS = ["src", "poster", "href", "xlink:href"] as const;
+
+function isRemote(value: string, base: URL) {
+  const url = resolveUrl(value.trim(), base);
+  return url !== null && /^https?:$/.test(url.protocol) && url.origin !== location.origin;
+}
+
+/**
+ * Quita las referencias a otros sitios de los recursos que se cargan solos. La
+ * imagen queda marcada (`remote-blocked`) con su texto alternativo y el origen
+ * bloqueado en el título.
+ */
+function blockRemoteResources(content: DocumentFragment, path: string) {
+  const base = new URL(viewUrl(path), location.origin);
+
+  for (const el of content.querySelectorAll(AUTO_LOADED)) {
+    let blocked: string | null = null;
+
+    for (const attr of RESOURCE_ATTRS) {
+      const value = el.getAttribute(attr);
+      if (value !== null && isRemote(value, base)) {
+        blocked ??= value;
+        el.removeAttribute(attr);
+      }
+    }
+
+    // `srcset` es una lista `url [descriptor], url …`: basta una remota para quitarla.
+    const srcset = el.getAttribute("srcset");
+    if (srcset !== null && srcset.split(",").some((entry) => isRemote(entry.trim().split(/\s+/)[0] ?? "", base))) {
+      blocked ??= srcset;
+      el.removeAttribute("srcset");
+    }
+
+    if (blocked === null) continue;
+    el.classList.add("remote-blocked");
+    el.setAttribute("title", `Remote content blocked: ${blocked}`);
   }
 }
 

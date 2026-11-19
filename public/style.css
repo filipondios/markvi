@@ -1150,6 +1150,15 @@ video {
   max-width: 100%;
 }
 
+/* Recurso de otro sitio que no se cargó (ver `remoteimages`): queda su texto alternativo. */
+.remote-blocked {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
 table {
   display: block;
   width: max-content;

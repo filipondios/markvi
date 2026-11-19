@@ -205,3 +205,34 @@ test("un `raw` que no aparece en el texto no avanza el cursor", () => {
   annotateTokenLines(tokens, "uno\n\ndos");
   expect(tokens.map((token) => token.line)).toEqual([1, 3, 3]);
 });
+
+test("el front matter no desplaza las líneas aunque repita el texto del primer bloque", () => {
+  const source = "---\ntitle: Hola\ntags:\n  - todo\n---\nHola\n\n- todo\n\n# Final\n";
+  const body = splitFrontMatter(source);
+  const tokens = lex(body);
+  annotateTokenLines(tokens, source, source.length - body.length);
+
+  const lines = tokens
+    .filter((token) => token.type !== "space")
+    .map((token) => [token.type, token.line]);
+  expect(lines).toEqual([
+    ["paragraph", 6],
+    ["list", 8],
+    ["heading", 10],
+  ]);
+});
+
+test("el front matter con CRLF tampoco desplaza las líneas", () => {
+  const source = "---\r\ntitle: Hola\r\n---\r\nHola\r\n\r\n# Final\r\n";
+  const body = splitFrontMatter(source);
+  const tokens = lex(body);
+  annotateTokenLines(tokens, source, source.length - body.length);
+
+  const lines = tokens
+    .filter((token) => token.type !== "space")
+    .map((token) => [token.type, token.line]);
+  expect(lines).toEqual([
+    ["paragraph", 4],
+    ["heading", 6],
+  ]);
+});

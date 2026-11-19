@@ -69,6 +69,11 @@ export interface RenderExtras {
   alerts: boolean;
   /** Front matter YAML inicial (`--- … ---`): se separa y no se renderiza. */
   frontmatter: boolean;
+  /**
+   * Cargar imágenes (y otros recursos) de otros sitios. Desactivado por omisión:
+   * un `.md` ajeno no debe poder hacer peticiones externas (rastreo, IP) al abrirse.
+   */
+  remoteimages: boolean;
 }
 
 export interface LoadedConfig {
@@ -78,7 +83,7 @@ export interface LoadedConfig {
   exists: boolean;
 }
 
-export const RENDER_EXTRAS = ["footnotes", "alerts", "frontmatter"] as const satisfies readonly (keyof RenderExtras)[];
+export const RENDER_EXTRAS = ["footnotes", "alerts", "frontmatter", "remoteimages"] as const satisfies readonly (keyof RenderExtras)[];
 
 export const DEFAULT_LEADER_BINDINGS: readonly LeaderBinding[] = [
   { keys: ["f"], action: "find" },
@@ -90,9 +95,12 @@ export const DEFAULT_LEADER_BINDINGS: readonly LeaderBinding[] = [
   { keys: ["x"], action: "close" },
 ];
 
+/** Extras que empiezan desactivados porque abren una superficie de ataque. */
+const OFF_BY_DEFAULT: readonly (keyof RenderExtras)[] = ["remoteimages"];
+
 function defaultRenderExtras(): RenderExtras {
   const extras = {} as RenderExtras;
-  for (const key of RENDER_EXTRAS) extras[key] = true;
+  for (const key of RENDER_EXTRAS) extras[key] = !OFF_BY_DEFAULT.includes(key);
   return extras;
 }
 

@@ -19,10 +19,9 @@ type HeadingToken = LineToken & { depth?: number; text?: string };
 const marked = new Marked();
 
 export function extractHeadings(source: string, stripFrontMatter = true): Heading[] {
-  const tokens = marked.lexer(
-    stripFrontMatter ? splitFrontMatter(source) : source,
-  ) as unknown as HeadingToken[];
-  annotateTokenLines(tokens, source);
+  const body = stripFrontMatter ? splitFrontMatter(source) : source;
+  const tokens = marked.lexer(body) as unknown as HeadingToken[];
+  annotateTokenLines(tokens, source, source.length - body.length);
 
   const headings: Heading[] = [];
   collect(tokens, headings);
