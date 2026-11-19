@@ -1,5 +1,6 @@
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname, posix } from "node:path";
+import { createFileExclusive, withFileLock, writeFileAtomic } from "./atomic.ts";
 import {
   HttpError,
   isMarkdown,
@@ -183,30 +184,39 @@ export function createRoutes(
       PUT: guard(async (req) => {
         const create = new URL(req.url).searchParams.get("create") === "1";
         const file = create ? await writableMarkdown(req) : await markdownFile(req);
+        // El cuerpo se lee antes de tomar el turno: una subida lenta no bloquea el archivo.
         const body = await req.text();
-
         const ifMatch = req.headers.get("if-match");
-        if (ifMatch) {
-          const current = await Bun.file(file)
-            .text()
-            .catch((error: NodeJS.ErrnoException) => {
-              if (error.code === "ENOENT") return null;
-              throw error;
-            });
-          if (current === null) throw new HttpError(404, "File not found.");
-          const etag = etagFor(current);
-          if (ifMatch !== "*" && ifMatch !== etag) {
-            return Response.json(
-              { error: "The file changed on disk.", etag },
-              { status: 409, headers: NO_STORE },
-            );
-          }
-        }
 
-        await Bun.write(file, body);
-        return new Response(null, {
-          status: 204,
-          headers: { ...NO_STORE, ETag: etagFor(body) },
+        // Comprobar `If-Match` y escribir es una sola operación por archivo; si no,
+        // dos guardados con el mismo ETag pasarían ambos y uno pisaría al otro.
+        return withFileLock(file, async () => {
+          if (ifMatch) {
+            const current = await Bun.file(file)
+              .text()
+              .catch((error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return null;
+                throw error;
+              });
+            if (current === null) throw new HttpError(404, "File not found.");
+            const etag = etagFor(current);
+            if (ifMatch !== "*" && ifMatch !== etag) {
+              return Response.json(
+                { error: "The file changed on disk.", etag },
+                { status: 409, headers: NO_STORE },
+              );
+            }
+          } else if (!create) {
+            // Sin `If-Match` no se leyó el archivo: si se movió o borró mientras
+            // esperaba su turno, escribir lo resucitaría en la ruta antigua.
+            await stat(file);
+          }
+
+          await writeFileAtomic(file, body);
+          return new Response(null, {
+            status: 204,
+            headers: { ...NO_STORE, ETag: etagFor(body) },
+          });
         });
       }),
       // Crea un archivo nuevo (y sus carpetas). Nunca sobrescribe: si existe, 409.
@@ -217,7 +227,7 @@ export function createRoutes(
         const body = await req.text();
 
         await mkdir(dirname(file), { recursive: true });
-        await writeFile(file, body, { flag: "wx" });
+        await withFileLock(file, () => createFileExclusive(file, body));
         return new Response(null, {
           status: 201,
           headers: { ...NO_STORE, ETag: etagFor(body) },
@@ -225,20 +235,22 @@ export function createRoutes(
       }),
       DELETE: guard(async (req) => {
         const file = await markdownFile(req);
-
         const ifMatch = req.headers.get("if-match");
-        if (ifMatch && ifMatch !== "*") {
-          const etag = etagFor(await Bun.file(file).text());
-          if (ifMatch !== etag) {
-            return Response.json(
-              { error: "The file changed on disk.", etag },
-              { status: 409, headers: NO_STORE },
-            );
-          }
-        }
 
-        await unlink(file);
-        return new Response(null, { status: 204, headers: NO_STORE });
+        return withFileLock(file, async () => {
+          if (ifMatch && ifMatch !== "*") {
+            const etag = etagFor(await Bun.file(file).text());
+            if (ifMatch !== etag) {
+              return Response.json(
+                { error: "The file changed on disk.", etag },
+                { status: 409, headers: NO_STORE },
+              );
+            }
+          }
+
+          await unlink(file);
+          return new Response(null, { status: 204, headers: NO_STORE });
+        });
       }),
     },
     // Renombra o mueve un archivo. El destino no puede existir.
@@ -257,7 +269,9 @@ export function createRoutes(
         const source = await resolveFile(root, from);
         const target = await resolveNew(root, to);
         await mkdir(dirname(target), { recursive: true });
-        await rename(source, target);
+        // Un guardado en curso sobre el origen debe acabar antes de moverlo: si no,
+        // su rename recrearía el archivo en la ruta antigua.
+        await withFileLock(source, () => rename(source, target));
         return new Response(null, { status: 204, headers: NO_STORE });
       }),
     },

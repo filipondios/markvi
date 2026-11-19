@@ -1,5 +1,16 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRoutes } from "./api.ts";
@@ -214,4 +225,72 @@ test("GET /api/search sin consulta devuelve vacío y rechaza consultas enormes",
 test("GET /api/search comprueba el Host", async () => {
   const response = await fetch(`${origin}/api/search?q=x`, { headers: { Host: "malo.example" } });
   expect(response.status).toBe(403);
+});
+
+// --- Guardado atómico y concurrente ------------------------------------------
+
+const put = (path: string, body: string, headers: Record<string, string> = {}) =>
+  fetch(file(path), { method: "PUT", body, headers });
+const temporaries = async () => (await readdir(root)).filter((name) => name.endsWith(".tmp"));
+
+test("PUT sustituye el contenido, devuelve el ETag nuevo y no deja temporales", async () => {
+  const created = await post("guardar.md", "viejo\n");
+  const response = await put("guardar.md", "nuevo\n", { "If-Match": created.headers.get("etag")! });
+  expect(response.status).toBe(204);
+  expect(await readFile(join(root, "guardar.md"), "utf8")).toBe("nuevo\n");
+  expect((await fetch(file("guardar.md"))).headers.get("etag")).toBe(response.headers.get("etag"));
+  expect(await temporaries()).toEqual([]);
+});
+
+test("PUT con el mismo If-Match a la vez: solo uno gana, el resto recibe 409", async () => {
+  const created = await post("carrera.md", "inicial\n");
+  const etag = created.headers.get("etag")!;
+
+  // Cuerpos grandes: con cuerpos de pocos bytes las peticiones se atienden casi en
+  // serie y la carrera no se manifiesta (sin el candado, aquí ganan las 20).
+  const bodyFor = (i: number) => `escritor ${i}\n`.padEnd(400_000, "x");
+  const responses = await Promise.all(
+    Array.from({ length: 20 }, (_, i) => put("carrera.md", bodyFor(i), { "If-Match": etag })),
+  );
+  const statuses = responses.map((response) => response.status);
+  expect(statuses.filter((status) => status === 204)).toHaveLength(1);
+  expect(statuses.filter((status) => status === 409)).toHaveLength(19);
+
+  // El contenido es el del único escritor que ganó, completo.
+  const winner = statuses.indexOf(204);
+  expect(await readFile(join(root, "carrera.md"), "utf8")).toBe(bodyFor(winner));
+  expect(await temporaries()).toEqual([]);
+});
+
+test("PUT a un enlace simbólico del raíz escribe el destino y conserva el enlace", async () => {
+  await writeFile(join(root, "real.md"), "real\n");
+  await symlink(join(root, "real.md"), join(root, "enlace.md"));
+
+  const response = await put("enlace.md", "por el enlace\n");
+  expect(response.status).toBe(204);
+  expect((await lstat(join(root, "enlace.md"))).isSymbolicLink()).toBe(true);
+  expect(await readFile(join(root, "real.md"), "utf8")).toBe("por el enlace\n");
+});
+
+test("PUT sin create a un archivo que no existe no lo crea", async () => {
+  const response = await put("fantasma.md", "x");
+  expect(response.status).toBe(404);
+  expect(await exists("fantasma.md")).toBe(false);
+});
+
+test("PUT con create=1 recrea un archivo borrado", async () => {
+  const response = await fetch(`${file("recreado.md")}&create=1`, { method: "PUT", body: "de nuevo\n" });
+  expect(response.status).toBe(204);
+  expect(await readFile(join(root, "recreado.md"), "utf8")).toBe("de nuevo\n");
+});
+
+test("POST a la vez sobre la misma ruta: uno crea (201) y el resto recibe 409", async () => {
+  const responses = await Promise.all(
+    Array.from({ length: 10 }, (_, i) => post("doble.md", `creador ${i}\n`)),
+  );
+  const statuses = responses.map((response) => response.status);
+  expect(statuses.filter((status) => status === 201)).toHaveLength(1);
+  expect(statuses.filter((status) => status === 409)).toHaveLength(9);
+  expect(await readFile(join(root, "doble.md"), "utf8")).toBe(`creador ${statuses.indexOf(201)}\n`);
+  expect(await temporaries()).toEqual([]);
 });
