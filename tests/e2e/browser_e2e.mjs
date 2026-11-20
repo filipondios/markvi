@@ -293,6 +293,28 @@ async function main() {
         );
       });
 
+      await check("sanitización: el Markdown no ejecuta scripts ni carga recursos externos", async () => {
+        await writeFile(
+          join(vault, "xss-audit.md"),
+          '<script>window.__auditPwned = 1;</script>\n\n<img src="http://evil.example/x.png" onerror="window.__auditPwned2 = 1">\n\n# XSS\n',
+        );
+        const context = await browser.newContext();
+        const probe = await context.newPage();
+        const external = [];
+        probe.on("request", (request) => {
+          if (request.url().includes("evil.example")) external.push(request.url());
+        });
+        try {
+          await gotoView(probe, base, "xss-audit.md");
+          assert((await probe.evaluate(() => window.__auditPwned ?? null)) === null, "se ejecutó un script del Markdown");
+          assert((await probe.evaluate(() => window.__auditPwned2 ?? null)) === null, "se ejecutó el onerror de una imagen");
+          assert((await probe.locator("#content script").count()) === 0, "hay scripts inyectados en el contenido");
+          assert(external.length === 0, `peticiones externas: ${external.join(", ")}`);
+        } finally {
+          await context.close();
+        }
+      });
+
       await check("sin errores de página ni peticiones fallidas inesperadas", async () => {
         assert(errors.length === 0, errors.join(" | "));
       });

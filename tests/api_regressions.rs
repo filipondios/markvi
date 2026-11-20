@@ -1,4 +1,4 @@
-//! Regresiones de los hallazgos de seguridad de la fase 7, sobre copias temporales.
+//! Regresiones de API HTTP sobre copias temporales del directorio de notas.
 use std::{
     fs,
     io::{Read, Write},
@@ -124,6 +124,61 @@ fn invalid_percent_escape_and_plus_in_query() {
         method.contains("404 Not Found") && !method.to_lowercase().contains("allow:"),
         "{method:?}"
     );
+}
+
+#[test]
+fn conflicting_if_match_writes_have_one_winner() {
+    let fixture = Fixture::new();
+    let current = fixture.request(
+        "GET /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    let etag = current
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("etag")
+                .then(|| value.trim().to_string())
+        })
+        .expect("ETag en GET /api/file");
+
+    // Se envían todas las peticiones antes de leerlas para que el servidor las
+    // procese en paralelo sobre el mismo archivo y con el mismo ETag.
+    let mut streams = Vec::new();
+    for i in 0..20 {
+        let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let body = format!("escritor {i}\n");
+        write!(
+            stream,
+            "PUT /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-Match: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            fixture.port,
+            etag,
+            body.len(),
+            body
+        )
+        .unwrap();
+        streams.push(stream);
+    }
+    let mut statuses = Vec::new();
+    for mut stream in streams {
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        let status = answer.lines().next().unwrap_or("").to_string();
+        statuses.push(status);
+    }
+    let ok = statuses
+        .iter()
+        .filter(|s| s.contains("204 No Content"))
+        .count();
+    let conflicts = statuses
+        .iter()
+        .filter(|s| s.contains("409 Conflict"))
+        .count();
+    assert_eq!(ok, 1, "debe ganar una sola escritura: {statuses:?}");
+    assert_eq!(conflicts, 19, "el resto debe recibir 409: {statuses:?}");
 }
 
 #[test]
