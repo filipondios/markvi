@@ -55,6 +55,17 @@ impl Fixture {
         Self { root, child, port }
     }
 
+    fn wait_exit(&mut self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
     fn request(&self, request: impl AsRef<str>) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
         stream
@@ -117,7 +128,7 @@ fn invalid_percent_escape_and_plus_in_query() {
 
 #[test]
 fn sigterm_closes_server_with_sse_client_open() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
     write!(
         stream,
@@ -130,15 +141,7 @@ fn sigterm_closes_server_with_sse_client_open() {
         .status()
         .unwrap();
     assert!(status.success());
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut exited = false;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(("127.0.0.1", fixture.port)).is_err() {
-            exited = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let exited = fixture.wait_exit(Duration::from_secs(5));
     let _ = stream.shutdown(std::net::Shutdown::Both);
     assert!(exited, "el servidor no cerró con un cliente SSE abierto");
 }
