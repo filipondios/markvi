@@ -1,0 +1,731 @@
+{
+  "schema": "markvi-search-baseline@1",
+  "generated_by": "rust/recording/search_probe.ts",
+  "bun": "1.4.4",
+  "cases": [
+    {
+      "id": "search-literal",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "uno\nfoo bar foo\ndos",
+        "foo",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 2,
+            "text": "foo bar foo",
+            "matches": [
+              [
+                0,
+                3
+              ],
+              [
+                8,
+                11
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-smart-lower",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "Todo\ntodo\nTODO",
+        "todo",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "Todo",
+            "matches": [
+              [
+                0,
+                4
+              ]
+            ]
+          },
+          {
+            "path": "a.md",
+            "line": 2,
+            "text": "todo",
+            "matches": [
+              [
+                0,
+                4
+              ]
+            ]
+          },
+          {
+            "path": "a.md",
+            "line": 3,
+            "text": "TODO",
+            "matches": [
+              [
+                0,
+                4
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-smart-title",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "Todo\ntodo\nTODO",
+        "Todo",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "Todo",
+            "matches": [
+              [
+                0,
+                4
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-smart-upper",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "Todo\ntodo\nTODO",
+        "TODO",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 3,
+            "text": "TODO",
+            "matches": [
+              [
+                0,
+                4
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-regex-dot",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "a.b\naxb",
+        "a.b",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "a.b",
+            "matches": [
+              [
+                0,
+                3
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-regex-parens",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "(x)\n[x]",
+        "(x)",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "(x)",
+            "matches": [
+              [
+                0,
+                3
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-regex-bracket",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "(x)\n[y]",
+        "[y]",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 2,
+            "text": "[y]",
+            "matches": [
+              [
+                0,
+                3
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-indent",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "    - [ ] comprar pan",
+        "pan",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "- [ ] comprar pan",
+            "matches": [
+              [
+                14,
+                17
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-crlf",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "uno\r\ndos\r\ntres objetivo",
+        "objetivo",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 3,
+            "text": "tres objetivo",
+            "matches": [
+              [
+                5,
+                13
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-long-line",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aguja bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "aguja",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aguja bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "matches": [
+              [
+                41,
+                46
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-per-file",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "foo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo",
+        "foo",
+        3
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "foo",
+            "matches": [
+              [
+                0,
+                3
+              ]
+            ]
+          },
+          {
+            "path": "a.md",
+            "line": 2,
+            "text": "foo",
+            "matches": [
+              [
+                0,
+                3
+              ]
+            ]
+          },
+          {
+            "path": "a.md",
+            "line": 3,
+            "text": "foo",
+            "matches": [
+              [
+                0,
+                3
+              ]
+            ]
+          }
+        ],
+        "truncated": true
+      }
+    },
+    {
+      "id": "search-unicode",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "😀 café CAFÉ ſ s K k",
+        "café",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "😀 café CAFÉ ſ s K k",
+            "matches": [
+              [
+                3,
+                7
+              ],
+              [
+                8,
+                12
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-unicode-fold",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "σ σ ς",
+        "σ",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "σ σ ς",
+            "matches": [
+              [
+                0,
+                1
+              ],
+              [
+                2,
+                3
+              ],
+              [
+                4,
+                5
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "search-emoji-offset",
+      "fn": "searchText",
+      "args": [
+        "a.md",
+        "😀😀 aguja 😀",
+        "aguja",
+        10
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "a.md",
+            "line": 1,
+            "text": "😀😀 aguja 😀",
+            "matches": [
+              [
+                5,
+                10
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "extract-basic",
+      "fn": "extractLinks",
+      "args": [
+        "ver [[Nota]] y [texto](otra.md#sec) fin"
+      ],
+      "output": [
+        {
+          "line": 1,
+          "raw": "ver [[Nota]] y [texto](otra.md#sec) fin",
+          "range": [
+            4,
+            12
+          ],
+          "kind": "wiki",
+          "target": "Nota"
+        },
+        {
+          "line": 1,
+          "raw": "ver [[Nota]] y [texto](otra.md#sec) fin",
+          "range": [
+            15,
+            35
+          ],
+          "kind": "markdown",
+          "target": "otra.md#sec"
+        }
+      ]
+    },
+    {
+      "id": "extract-fences",
+      "fn": "extractLinks",
+      "args": [
+        "```\n[[Ignorada]]\n```\n\n[[Real]]\n\n~~~\n[[No]]\n~~~"
+      ],
+      "output": [
+        {
+          "line": 5,
+          "raw": "[[Real]]",
+          "range": [
+            0,
+            8
+          ],
+          "kind": "wiki",
+          "target": "Real"
+        }
+      ]
+    },
+    {
+      "id": "extract-inline",
+      "fn": "extractLinks",
+      "args": [
+        "código `[[No]]` y [[Si]]"
+      ],
+      "output": [
+        {
+          "line": 1,
+          "raw": "código `[[No]]` y [[Si]]",
+          "range": [
+            18,
+            24
+          ],
+          "kind": "wiki",
+          "target": "Si"
+        }
+      ]
+    },
+    {
+      "id": "extract-image",
+      "fn": "extractLinks",
+      "args": [
+        "![img](a.md) y [[Real]]"
+      ],
+      "output": [
+        {
+          "line": 1,
+          "raw": "![img](a.md) y [[Real]]",
+          "range": [
+            15,
+            23
+          ],
+          "kind": "wiki",
+          "target": "Real"
+        }
+      ]
+    },
+    {
+      "id": "extract-crlf",
+      "fn": "extractLinks",
+      "args": [
+        "a\r\n\r\n[[X]]"
+      ],
+      "output": [
+        {
+          "line": 3,
+          "raw": "[[X]]",
+          "range": [
+            0,
+            5
+          ],
+          "kind": "wiki",
+          "target": "X"
+        }
+      ]
+    },
+    {
+      "id": "md-target-parent",
+      "fn": "markdownTarget",
+      "args": [
+        "../TODO.md",
+        "notas/otra.md"
+      ],
+      "output": "TODO.md"
+    },
+    {
+      "id": "md-target-dot",
+      "fn": "markdownTarget",
+      "args": [
+        "./b.md#x",
+        "notas/a.md"
+      ],
+      "output": "notas/b.md"
+    },
+    {
+      "id": "md-target-abs",
+      "fn": "markdownTarget",
+      "args": [
+        "/notas/b.md",
+        "x/a.md"
+      ],
+      "output": "notas/b.md"
+    },
+    {
+      "id": "md-target-encoded",
+      "fn": "markdownTarget",
+      "args": [
+        "a%20b.md",
+        ""
+      ],
+      "output": "a b.md"
+    },
+    {
+      "id": "md-target-url",
+      "fn": "markdownTarget",
+      "args": [
+        "https://x.org/a.md",
+        "x.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "md-target-mail",
+      "fn": "markdownTarget",
+      "args": [
+        "mailto:a@b.c",
+        "x.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "md-target-anchor",
+      "fn": "markdownTarget",
+      "args": [
+        "#sec",
+        "x.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "md-target-image",
+      "fn": "markdownTarget",
+      "args": [
+        "img.png",
+        "x.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "md-target-escape",
+      "fn": "markdownTarget",
+      "args": [
+        "../../x.md",
+        "a/b.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "backlinks-basic",
+      "fn": "findBacklinks",
+      "args": [
+        [
+          "a.md",
+          "notas/b.md"
+        ],
+        "sin enlaces\n[[a]] y [de nuevo](../a.md)\n[[a#Sec|alias]]\n[[c]]",
+        "notas/b.md",
+        "a.md",
+        20
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "notas/b.md",
+            "line": 2,
+            "text": "[[a]] y [de nuevo](../a.md)",
+            "matches": [
+              [
+                0,
+                5
+              ],
+              [
+                8,
+                27
+              ]
+            ]
+          },
+          {
+            "path": "notas/b.md",
+            "line": 3,
+            "text": "[[a#Sec|alias]]",
+            "matches": [
+              [
+                0,
+                15
+              ]
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "id": "backlinks-self",
+      "fn": "findBacklinks",
+      "args": [
+        [
+          "a.md"
+        ],
+        "[[a]] [[#x]]",
+        "a.md",
+        "a.md",
+        20
+      ],
+      "output": {
+        "hits": [],
+        "truncated": false
+      }
+    },
+    {
+      "id": "backlinks-limit",
+      "fn": "findBacklinks",
+      "args": [
+        [
+          "a.md",
+          "b.md"
+        ],
+        "[[a]]\n[[a]]\n[[a]]\n[[a]]\n[[a]]",
+        "b.md",
+        "a.md",
+        3
+      ],
+      "output": {
+        "hits": [
+          {
+            "path": "b.md",
+            "line": 1,
+            "text": "[[a]]",
+            "matches": [
+              [
+                0,
+                5
+              ]
+            ]
+          },
+          {
+            "path": "b.md",
+            "line": 2,
+            "text": "[[a]]",
+            "matches": [
+              [
+                0,
+                5
+              ]
+            ]
+          },
+          {
+            "path": "b.md",
+            "line": 3,
+            "text": "[[a]]",
+            "matches": [
+              [
+                0,
+                5
+              ]
+            ]
+          }
+        ],
+        "truncated": true
+      }
+    }
+  ]
+}

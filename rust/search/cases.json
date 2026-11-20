@@ -1,0 +1,40 @@
+{
+  "schema": "markvi-search-cases@1",
+  "note": "Casos tomados de src/search.test.ts y src/backlinks.test.ts; las salidas se graban desde TypeScript.",
+  "cases": [
+    {"id":"search-literal", "fn":"searchText", "args":["a.md","uno\nfoo bar foo\ndos","foo",10]},
+    {"id":"search-smart-lower", "fn":"searchText", "args":["a.md","Todo\ntodo\nTODO","todo",10]},
+    {"id":"search-smart-title", "fn":"searchText", "args":["a.md","Todo\ntodo\nTODO","Todo",10]},
+    {"id":"search-smart-upper", "fn":"searchText", "args":["a.md","Todo\ntodo\nTODO","TODO",10]},
+    {"id":"search-regex-dot", "fn":"searchText", "args":["a.md","a.b\naxb","a.b",10]},
+    {"id":"search-regex-parens", "fn":"searchText", "args":["a.md","(x)\n[x]","(x)",10]},
+    {"id":"search-regex-bracket", "fn":"searchText", "args":["a.md","(x)\n[y]","[y]",10]},
+    {"id":"search-indent", "fn":"searchText", "args":["a.md","    - [ ] comprar pan","pan",10]},
+    {"id":"search-crlf", "fn":"searchText", "args":["a.md","uno\r\ndos\r\ntres objetivo","objetivo",10]},
+    {"id":"search-long-line", "fn":"searchText", "args":["a.md","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aguja bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","aguja",10]},
+    {"id":"search-per-file", "fn":"searchText", "args":["a.md","foo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo\nfoo","foo",3]},
+    {"id":"search-unicode", "fn":"searchText", "args":["a.md","😀 café CAFÉ ſ s K k","café",10]},
+    {"id":"search-unicode-fold", "fn":"searchText", "args":["a.md","σ σ ς","σ",10]},
+    {"id":"search-emoji-offset", "fn":"searchText", "args":["a.md","😀😀 aguja 😀","aguja",10]},
+
+    {"id":"extract-basic", "fn":"extractLinks", "args":["ver [[Nota]] y [texto](otra.md#sec) fin"]},
+    {"id":"extract-fences", "fn":"extractLinks", "args":["```\n[[Ignorada]]\n```\n\n[[Real]]\n\n~~~\n[[No]]\n~~~"]},
+    {"id":"extract-inline", "fn":"extractLinks", "args":["código `[[No]]` y [[Si]]"]},
+    {"id":"extract-image", "fn":"extractLinks", "args":["![img](a.md) y [[Real]]"]},
+    {"id":"extract-crlf", "fn":"extractLinks", "args":["a\r\n\r\n[[X]]"]},
+
+    {"id":"md-target-parent", "fn":"markdownTarget", "args":["../TODO.md","notas/otra.md"]},
+    {"id":"md-target-dot", "fn":"markdownTarget", "args":["./b.md#x","notas/a.md"]},
+    {"id":"md-target-abs", "fn":"markdownTarget", "args":["/notas/b.md","x/a.md"]},
+    {"id":"md-target-encoded", "fn":"markdownTarget", "args":["a%20b.md",""]},
+    {"id":"md-target-url", "fn":"markdownTarget", "args":["https://x.org/a.md","x.md"]},
+    {"id":"md-target-mail", "fn":"markdownTarget", "args":["mailto:a@b.c","x.md"]},
+    {"id":"md-target-anchor", "fn":"markdownTarget", "args":["#sec","x.md"]},
+    {"id":"md-target-image", "fn":"markdownTarget", "args":["img.png","x.md"]},
+    {"id":"md-target-escape", "fn":"markdownTarget", "args":["../../x.md","a/b.md"]},
+
+    {"id":"backlinks-basic", "fn":"findBacklinks", "args":[["a.md","notas/b.md"],"sin enlaces\n[[a]] y [de nuevo](../a.md)\n[[a#Sec|alias]]\n[[c]]","notas/b.md","a.md",20]},
+    {"id":"backlinks-self", "fn":"findBacklinks", "args":[["a.md"],"[[a]] [[#x]]","a.md","a.md",20]},
+    {"id":"backlinks-limit", "fn":"findBacklinks", "args":[["a.md","b.md"],"[[a]]\n[[a]]\n[[a]]\n[[a]]\n[[a]]","b.md","a.md",3]}
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schema": "markvi-static-manifest@1",
+  "captured_from": "bun run server.ts ./example",
+  "index": {
+    "file": "index.html",
+    "content_type": "text/html;charset=utf-8",
+    "cache_control": "no-cache",
+    "etag": "\"5d2079dee36213ca\""
+  },
+  "assets": {
+    "/logo-icon-m1dk8k64.png": {
+      "file": "logo-icon-m1dk8k64.png",
+      "content_type": "image/png",
+      "cache_control": "public, max-age=31536000, immutable",
+      "etag": "\"64c6b34893ed81b4\""
+    },
+    "/ObelMono-VF-9bs53f86.woff2": {
+      "file": "ObelMono-VF-9bs53f86.woff2",
+      "content_type": "font/woff2",
+      "cache_control": "public, max-age=31536000, immutable",
+      "etag": "\"66880fa345190b69\""
+    },
+    "/chunk-zcj2ah17.css": {
+      "file": "chunk-zcj2ah17.css",
+      "content_type": "text/css;charset=utf-8",
+      "cache_control": "public, max-age=31536000, immutable",
+      "etag": "\"0761916a02928c3f\""
+    },
+    "/chunk-3kf133kh.js": {
+      "file": "chunk-3kf133kh.js",
+      "content_type": "text/javascript;charset=utf-8",
+      "cache_control": "public, max-age=31536000, immutable",
+      "etag": "\"d1b323c3c18f73c3\""
+    }
+  },
+  "fallback": {
+    "status": 404,
+    "body": "Not found"
+  }
+}

@@ -1,0 +1,771 @@
+{
+  "schema": "markvi-core-baseline@1",
+  "generated_by": "rust/recording/core_probe.ts",
+  "bun": "1.4.4",
+  "cases": [
+    {
+      "id": "case-lower",
+      "fn": "isCaseSensitive",
+      "args": [
+        "todo"
+      ],
+      "output": false
+    },
+    {
+      "id": "case-upper",
+      "fn": "isCaseSensitive",
+      "args": [
+        "Todo"
+      ],
+      "output": true
+    },
+    {
+      "id": "case-caps",
+      "fn": "isCaseSensitive",
+      "args": [
+        "TODO"
+      ],
+      "output": true
+    },
+    {
+      "id": "case-unicode",
+      "fn": "isCaseSensitive",
+      "args": [
+        "Ärger"
+      ],
+      "output": true
+    },
+    {
+      "id": "case-turkish",
+      "fn": "isCaseSensitive",
+      "args": [
+        "İstanbul"
+      ],
+      "output": true
+    },
+    {
+      "id": "path-backslash",
+      "fn": "normalizePath",
+      "args": [
+        "a\\b.md"
+      ],
+      "output": "a/b.md"
+    },
+    {
+      "id": "path-dot",
+      "fn": "normalizePath",
+      "args": [
+        "./a.md"
+      ],
+      "output": "a.md"
+    },
+    {
+      "id": "path-slashes",
+      "fn": "normalizePath",
+      "args": [
+        "//a.md"
+      ],
+      "output": "a.md"
+    },
+    {
+      "id": "path-mixed",
+      "fn": "normalizePath",
+      "args": [
+        "./a\\b.md"
+      ],
+      "output": "a/b.md"
+    },
+    {
+      "id": "md-upper",
+      "fn": "isMarkdownPath",
+      "args": [
+        "A.MD"
+      ],
+      "output": true
+    },
+    {
+      "id": "md-txt",
+      "fn": "isMarkdownPath",
+      "args": [
+        "a.txt"
+      ],
+      "output": false
+    },
+    {
+      "id": "safe-ok",
+      "fn": "isSafePath",
+      "args": [
+        "a/b.md"
+      ],
+      "output": true
+    },
+    {
+      "id": "safe-dotdot",
+      "fn": "isSafePath",
+      "args": [
+        "../secreto.md"
+      ],
+      "output": false
+    },
+    {
+      "id": "safe-hidden",
+      "fn": "isSafePath",
+      "args": [
+        ".oculto.md"
+      ],
+      "output": false
+    },
+    {
+      "id": "safe-backslash",
+      "fn": "isSafePath",
+      "args": [
+        "a\\b.md"
+      ],
+      "output": false
+    },
+    {
+      "id": "safe-double",
+      "fn": "isSafePath",
+      "args": [
+        "a//b.md"
+      ],
+      "output": false
+    },
+    {
+      "id": "newpath-sub",
+      "fn": "normalizeNewPath",
+      "args": [
+        "notas/idea"
+      ],
+      "output": "notas/idea.md"
+    },
+    {
+      "id": "newpath-dot",
+      "fn": "normalizeNewPath",
+      "args": [
+        "./idea.md"
+      ],
+      "output": "idea.md"
+    },
+    {
+      "id": "newpath-parent",
+      "fn": "normalizeNewPath",
+      "args": [
+        "../idea"
+      ],
+      "output": null
+    },
+    {
+      "id": "newpath-txt",
+      "fn": "normalizeNewPath",
+      "args": [
+        "idea.txt"
+      ],
+      "output": "idea.txt.md"
+    },
+    {
+      "id": "newpath-unicode",
+      "fn": "normalizeNewPath",
+      "args": [
+        "  notas/idea ñ  "
+      ],
+      "output": "notas/idea ñ.md"
+    },
+    {
+      "id": "split-root",
+      "fn": "splitPath",
+      "args": [
+        "a.md"
+      ],
+      "output": {
+        "dir": "",
+        "name": "a.md"
+      }
+    },
+    {
+      "id": "split-dir",
+      "fn": "splitPath",
+      "args": [
+        "a/b/c.md"
+      ],
+      "output": {
+        "dir": "a/b",
+        "name": "c.md"
+      }
+    },
+    {
+      "id": "viewurl-space",
+      "fn": "viewUrl",
+      "args": [
+        "a b/c.md"
+      ],
+      "output": "/view/a%20b/c.md"
+    },
+    {
+      "id": "fileurl-space",
+      "fn": "fileUrl",
+      "args": [
+        "a b/c.md"
+      ],
+      "output": "/api/file?path=a%20b%2Fc.md"
+    },
+    {
+      "id": "encode-unicode",
+      "fn": "encodeURIComponent",
+      "args": [
+        "ñ &"
+      ],
+      "output": "%C3%B1%20%26"
+    },
+    {
+      "id": "default-config",
+      "fn": "defaultConfig",
+      "args": [],
+      "output": {
+        "leader": " ",
+        "theme": "auto",
+        "font": null,
+        "editor": {
+          "number": true,
+          "relativenumber": false,
+          "scrolloff": 0
+        },
+        "leaderBindings": [
+          {
+            "keys": [
+              "f"
+            ],
+            "action": "find"
+          },
+          {
+            "keys": [
+              "/"
+            ],
+            "action": "grep"
+          },
+          {
+            "keys": [
+              "r"
+            ],
+            "action": "recent"
+          },
+          {
+            "keys": [
+              "a"
+            ],
+            "action": "alternate"
+          },
+          {
+            "keys": [
+              "t"
+            ],
+            "action": "toc"
+          },
+          {
+            "keys": [
+              "b"
+            ],
+            "action": "backlinks"
+          },
+          {
+            "keys": [
+              "x"
+            ],
+            "action": "close"
+          }
+        ],
+        "viewRemap": {},
+        "vimMappings": [],
+        "render": {
+          "footnotes": true,
+          "alerts": true,
+          "frontmatter": true,
+          "remoteimages": false
+        }
+      }
+    },
+    {
+      "id": "wiki-simple",
+      "fn": "parseWikiLink",
+      "args": [
+        "Nota"
+      ],
+      "output": {
+        "target": "Nota",
+        "heading": "",
+        "alias": ""
+      }
+    },
+    {
+      "id": "wiki-heading",
+      "fn": "parseWikiLink",
+      "args": [
+        "Nota#Título"
+      ],
+      "output": {
+        "target": "Nota",
+        "heading": "Título",
+        "alias": ""
+      }
+    },
+    {
+      "id": "wiki-only-heading",
+      "fn": "parseWikiLink",
+      "args": [
+        "#Título"
+      ],
+      "output": {
+        "target": "",
+        "heading": "Título",
+        "alias": ""
+      }
+    },
+    {
+      "id": "wiki-alias",
+      "fn": "parseWikiLink",
+      "args": [
+        "Nota|texto"
+      ],
+      "output": {
+        "target": "Nota",
+        "heading": "",
+        "alias": "texto"
+      }
+    },
+    {
+      "id": "wiki-spaces",
+      "fn": "parseWikiLink",
+      "args": [
+        " Nota # Sec | alias "
+      ],
+      "output": {
+        "target": "Nota",
+        "heading": "Sec",
+        "alias": "alias"
+      }
+    },
+    {
+      "id": "wiki-empty",
+      "fn": "parseWikiLink",
+      "args": [
+        ""
+      ],
+      "output": null
+    },
+    {
+      "id": "wiki-only-alias",
+      "fn": "parseWikiLink",
+      "args": [
+        "|solo alias"
+      ],
+      "output": null
+    },
+    {
+      "id": "wiki-bracket",
+      "fn": "parseWikiLink",
+      "args": [
+        "a[b"
+      ],
+      "output": null
+    },
+    {
+      "id": "wiki-newline",
+      "fn": "parseWikiLink",
+      "args": [
+        "a\nb"
+      ],
+      "output": null
+    },
+    {
+      "id": "wiki-links",
+      "fn": "wikiLinks",
+      "args": [
+        "uno [[A]] dos [[B|b]] tres"
+      ],
+      "output": [
+        [
+          4,
+          "[[A]]"
+        ],
+        [
+          14,
+          "[[B|b]]"
+        ]
+      ]
+    },
+    {
+      "id": "wiki-label-target",
+      "fn": "wikiLabel",
+      "args": [
+        {
+          "target": "A",
+          "heading": "",
+          "alias": ""
+        }
+      ],
+      "output": "A"
+    },
+    {
+      "id": "wiki-label-heading",
+      "fn": "wikiLabel",
+      "args": [
+        {
+          "target": "A",
+          "heading": "H",
+          "alias": ""
+        }
+      ],
+      "output": "A > H"
+    },
+    {
+      "id": "wiki-label-only-heading",
+      "fn": "wikiLabel",
+      "args": [
+        {
+          "target": "",
+          "heading": "H",
+          "alias": ""
+        }
+      ],
+      "output": "H"
+    },
+    {
+      "id": "wiki-label-alias",
+      "fn": "wikiLabel",
+      "args": [
+        {
+          "target": "A",
+          "heading": "H",
+          "alias": "x"
+        }
+      ],
+      "output": "x"
+    },
+    {
+      "id": "slug-accents",
+      "fn": "headingSlug",
+      "args": [
+        "  Mi Título: ¡Hola!  "
+      ],
+      "output": "mi-título-hola"
+    },
+    {
+      "id": "slug-simple",
+      "fn": "headingSlug",
+      "args": [
+        "a   b_c-d"
+      ],
+      "output": "a-b_c-d"
+    },
+    {
+      "id": "slug-unicode",
+      "fn": "headingSlug",
+      "args": [
+        "Café ☕ 日本語"
+      ],
+      "output": "café-日本語"
+    },
+    {
+      "id": "join-parent",
+      "fn": "joinRelative",
+      "args": [
+        "a/b/",
+        "../c.md"
+      ],
+      "output": "a/c.md"
+    },
+    {
+      "id": "join-dot",
+      "fn": "joinRelative",
+      "args": [
+        "a/",
+        "./x/../y"
+      ],
+      "output": "a/y"
+    },
+    {
+      "id": "join-root",
+      "fn": "joinRelative",
+      "args": [
+        "",
+        "x.md"
+      ],
+      "output": "x.md"
+    },
+    {
+      "id": "join-escape",
+      "fn": "joinRelative",
+      "args": [
+        "a/",
+        "../../x"
+      ],
+      "output": null
+    },
+    {
+      "id": "resolve-case",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "todo",
+        "inicio.md"
+      ],
+      "output": "TODO.md"
+    },
+    {
+      "id": "resolve-ext",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "TODO.md",
+        "inicio.md"
+      ],
+      "output": "TODO.md"
+    },
+    {
+      "id": "resolve-spaces",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "  otra  ",
+        "inicio.md"
+      ],
+      "output": "notas/otra.md"
+    },
+    {
+      "id": "resolve-missing",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "no existe",
+        "inicio.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "resolve-sibling",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "idea",
+        "diario/2026/hoy.md"
+      ],
+      "output": "diario/2026/idea.md"
+    },
+    {
+      "id": "resolve-notes",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "idea",
+        "notas/otra.md"
+      ],
+      "output": "notas/Idea.md"
+    },
+    {
+      "id": "resolve-root-from",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "idea",
+        "inicio.md"
+      ],
+      "output": "notas/Idea.md"
+    },
+    {
+      "id": "resolve-suffix-notes",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "notas/idea",
+        "diario/2026/idea.md"
+      ],
+      "output": "notas/Idea.md"
+    },
+    {
+      "id": "resolve-suffix-year",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "2026/idea",
+        "inicio.md"
+      ],
+      "output": "diario/2026/idea.md"
+    },
+    {
+      "id": "resolve-abs",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "/notas/otra",
+        "diario/2026/idea.md"
+      ],
+      "output": "notas/otra.md"
+    },
+    {
+      "id": "resolve-abs-missing",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "/otra",
+        "inicio.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "resolve-parent-missing",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "../otra",
+        "notas/Idea.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "resolve-dot",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "./otra",
+        "notas/Idea.md"
+      ],
+      "output": "notas/otra.md"
+    },
+    {
+      "id": "resolve-parent",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "../inicio",
+        "notas/Idea.md"
+      ],
+      "output": "inicio.md"
+    },
+    {
+      "id": "resolve-parent2",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "../../inicio",
+        "notas/Idea.md"
+      ],
+      "output": null
+    },
+    {
+      "id": "resolve-self",
+      "fn": "resolve",
+      "args": [
+        [
+          "inicio.md",
+          "notas/Idea.md",
+          "notas/otra.md",
+          "diario/2026/idea.md",
+          "TODO.md"
+        ],
+        "",
+        "notas/otra.md"
+      ],
+      "output": "notas/otra.md"
+    },
+    {
+      "id": "resolve-empty-index",
+      "fn": "resolve",
+      "args": [
+        [],
+        "a",
+        "x.md"
+      ],
+      "output": null
+    }
+  ]
+}
