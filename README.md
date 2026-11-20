@@ -5,13 +5,13 @@
 ## Usage
 
 ```
-bun run build                                # Rust release binary (see Build below)
-rust/target/release/markvi ./example         # http://127.0.0.1:3000
-rust/target/release/markvi ~/notes -p 4000   # another directory and port
-rust/target/release/markvi ~/notes -c my.toml # another configuration file
+bun run build                             # builds the Rust release binary (see Build below)
+target/release/markvi ./example           # http://127.0.0.1:3000
+target/release/markvi ~/notes -p 4000     # another directory and port
+target/release/markvi ~/notes -c my.toml  # another configuration file
 ```
 
-For a quick start from a source checkout, `bun run start` builds and runs the Rust server on `./example` (extra arguments go after `--`, e.g. `bun run start -- -p 4000`). Bun is no longer the backend runtime: it is only used for frontend tooling, tests and the demo.
+For a quick start from a source checkout, `bun run start` builds and runs the Rust server on `./example` (extra arguments go after `--`, e.g. `bun run start -- -p 4000`). Bun is needed only to build and test the frontend, never to run the published binary.
 
 The app only listens on `127.0.0.1`. The directory is scanned for `.md` files, ignoring hidden files and other irrelevant entries.
 
@@ -136,13 +136,13 @@ jk = "<Esc>"
 
 Invalid values never stop the app: they are ignored, the first problem is shown in the status bar and all of them are printed to the browser console and the server log. A shortcut cannot start with another bound sequence (`ff` while `f` is bound): unbind `f` first. In the editor's Normal mode the leader key replaces its Vim meaning (with `,` you lose "repeat `f` / `t` backwards").
 
-A guided tour of the app lives in the [`example` directory](./example): run `rust/target/release/markvi ./example` (or `bun run start`) and open `index.md`.
+A guided tour of the app lives in the [`example` directory](./example): run `target/release/markvi ./example` (or `bun run start`) and open `index.md`.
 
 ## Unsaved changes and symbolic links
 
 **Draft recovery.** While you edit, MarkVi keeps a backup of unsaved text in the browser's `localStorage` (written about half a second after you stop typing, and immediately when the page is hidden or closed). If the browser closes, crashes or reloads, the draft comes back the next time you open that file and a message says so; `:w` saves it and `:q!` discards it. If the file changed on disk in the meantime, the draft is restored as a conflict (`Reload` / `Overwrite`) instead of overwriting anything. Backups are removed when you save or discard, expire after 30 days, and files over about 1 M characters are not backed up (you get a warning). A draft that belongs to another window that is still open is never taken over.
 
-**Symbolic links.** A link whose real target is inside the served folder (and not hidden) behaves like the file or folder it points to: it is listed, searched, linked with `[[wiki]]` and live-reloaded. Links that leave the folder, are broken, loop, or point to something that is not a `.md` file are ignored and refused, as before. `:mv` and `:rm` on a link act on the link itself, never on its target.
+**Symbolic links.** A link whose real target is inside the served folder (and not hidden) behaves like the file or folder it points to: it is listed, searched, linked with `[[wiki]]` and live-reloaded. Links that leave the folder, are broken, loop, or point to something that is not a `.md` file are ignored and refused. `:mv` and `:rm` on a link act on the link itself, never on its target.
 
 ## Rendering Extras
 
@@ -171,7 +171,7 @@ Requests that modify files (`POST`, `PUT`, `DELETE`) are rejected when their `Or
 ```
 bun install                  # development dependencies (frontend build)
 bun run build                # builds the frontend, then the Rust release binary
-install -m 755 rust/target/release/markvi ~/.local/bin/markvi
+install -m 755 target/release/markvi ~/.local/bin/markvi
 markvi ~/notes               # replace notes with your directory
 ```
 

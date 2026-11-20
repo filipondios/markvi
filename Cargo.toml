@@ -2,14 +2,14 @@
 name = "markvi-server"
 version = "0.1.0"
 edition = "2021"
+description = "A local Markdown viewer and editor with Vim-style keybindings"
+license = "MIT"
 publish = false
 
 [[bin]]
 name = "markvi"
 path = "src/main.rs"
 
-# Selección propuesta en fase 2; pendiente del checkpoint de crates.
-# No se incluyen napi-rs, tower-http, regex ni indexmap directo: ver ARCHITECTURE.md.
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
@@ -19,7 +19,6 @@ toml = { version = "1", features = ["preserve_order"] }
 notify = "8"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
-# Necesario para implementar el Stream de SSE a mano (broadcast + heartbeat + cancelación)
-# sin añadir async-stream ni tokio-stream. ya está en el árbol como transitivo.
+# Necesarios para implementar el Stream de SSE (broadcast, heartbeat y cancelación).
 futures-core = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
