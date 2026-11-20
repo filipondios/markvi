@@ -5,11 +5,13 @@
 ## Usage
 
 ```
-bun install
-bun run server.ts ./example        # http://127.0.0.1:3000
-bun run server.ts ~/notes -p 4000  # another directory and port
-bun run server.ts ~/notes -c my.toml  # another configuration file
+bun run build                                # Rust release binary (see Build below)
+rust/target/release/markvi ./example         # http://127.0.0.1:3000
+rust/target/release/markvi ~/notes -p 4000   # another directory and port
+rust/target/release/markvi ~/notes -c my.toml # another configuration file
 ```
+
+For a quick start from a source checkout, `bun run start` builds and runs the Rust server on `./example` (extra arguments go after `--`, e.g. `bun run start -- -p 4000`). Bun is no longer the backend runtime: it is only used for frontend tooling, tests and the demo.
 
 The app only listens on `127.0.0.1`. The directory is scanned for `.md` files, ignoring hidden files and other irrelevant entries.
 
@@ -134,7 +136,7 @@ jk = "<Esc>"
 
 Invalid values never stop the app: they are ignored, the first problem is shown in the status bar and all of them are printed to the browser console and the server log. A shortcut cannot start with another bound sequence (`ff` while `f` is bound): unbind `f` first. In the editor's Normal mode the leader key replaces its Vim meaning (with `,` you lose "repeat `f` / `t` backwards").
 
-A guided tour of the app lives in the [`example` directory](./example): run `bun run server.ts ./example` and open `index.md`.
+A guided tour of the app lives in the [`example` directory](./example): run `rust/target/release/markvi ./example` (or `bun run start`) and open `index.md`.
 
 ## Unsaved changes and symbolic links
 
@@ -167,12 +169,12 @@ Requests that modify files (`POST`, `PUT`, `DELETE`) are rejected when their `Or
 ## Build as a Command-Line Tool
 
 ```
-bun run build # generates dist/markvi
-install -m 755 dist/markvi ~/.local/bin/markvi
+bun run build # cargo build --release -> rust/target/release/markvi
+install -m 755 rust/target/release/markvi ~/.local/bin/markvi
 markvi ~/notes # replace notes with your directory
 ```
 
-The binary bundles the frontend and does not require `bun` to be installed at runtime.
+The binary does not require `bun` at runtime. It reads the compiled frontend from `rust/assets/` using the absolute path recorded when it was built, so keep that directory available when running an installed binary. Bun is still needed only to regenerate those assets (`bun run build:frontend`) and to run the frontend tests.
 
 ## Licenses
 

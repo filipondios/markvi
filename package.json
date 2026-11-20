@@ -1,12 +1,13 @@
 {
   "name": "markvi",
-  "module": "server.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run server.ts",
-    "build": "bun build --compile ./server.ts --outfile dist/markvi",
+    "start": "cargo run --quiet --manifest-path rust/Cargo.toml --bin markvi -- ./example",
+    "build": "cargo build --release --manifest-path rust/Cargo.toml",
+    "build:frontend": "python3 rust/recording/capture_assets.py",
     "test": "bun test",
+    "test:rust": "cargo test --manifest-path rust/Cargo.toml",
     "typecheck": "bun check",
     "demo": "bun run scripts/demo.ts"
   },

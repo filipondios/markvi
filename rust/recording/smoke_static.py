@@ -54,7 +54,7 @@ def main():
     manifest = json.loads((ROOT / "rust/assets/manifest.json").read_text())
     ports = (free_port(), free_port())
     rust = subprocess.Popen(
-        [str(ROOT / "rust/target/debug/markvi"), "--port", str(ports[0])],
+        [str(ROOT / "rust/target/debug/markvi"), str(ROOT / "example"), "--port", str(ports[0])],
         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     )
     with tempfile.TemporaryDirectory(prefix="markvi-smoke-") as tmp:

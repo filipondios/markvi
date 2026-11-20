@@ -5,7 +5,7 @@ import { defaultConfig } from "../../src/configdefaults.ts";
 import * as paths from "../../src/paths.ts";
 import * as wiki from "../../src/wiki.ts";
 
-type Args = unknown[];
+type Args = any[];
 const dispatch: Record<string, (...args: Args) => unknown> = {
   isCaseSensitive: (q: string) => isCaseSensitive(q),
   normalizePath: (p: string) => paths.normalizePath(p),
