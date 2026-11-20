@@ -59,9 +59,20 @@ def main():
             if index["status"] != 200:
                 raise RuntimeError(f"GET / -> {index['status']}")
             refs = []
-            for path in re.findall(r'(?:src|href)="(/[^"]+)"', index["body"].decode()):
-                if path != "/" and path not in refs:
+            seen = set()
+
+            def enqueue(path):
+                if path != "/" and path not in seen:
+                    seen.add(path)
                     refs.append(path)
+
+            for path in re.findall(r'(?:src|href)="(/[^"]+)"', index["body"].decode()):
+                enqueue(path)
+            # El bundle JS/CSS referencia assets propios (p. ej. el logo de la
+            # portada) que no aparecen en el HTML: descubrirlos también.
+            asset_ref = re.compile(
+                r'"/([\w-]+-[0-9a-z]{8}\.(?:png|woff2|css|js|svg|jpe?g|gif|ico|webp))"'
+            )
             if OUT.exists():
                 shutil.rmtree(OUT)
             OUT.mkdir(parents=True)
@@ -78,7 +89,10 @@ def main():
                 "assets": {},
                 "fallback": {"status": 404, "body": "Not found"},
             }
-            for path in refs:
+            i = 0
+            while i < len(refs):
+                path = refs[i]
+                i += 1
                 resp = get(port, path)
                 if resp["status"] != 200:
                     raise RuntimeError(f"GET {path} -> {resp['status']}")
@@ -90,6 +104,8 @@ def main():
                     "cache_control": resp["headers"]["cache-control"],
                     "etag": resp["headers"].get("etag"),
                 }
+                for extra in asset_ref.findall(resp["body"].decode("utf-8", "ignore")):
+                    enqueue("/" + extra)
             (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
             print(f"captured {len(refs)} assets + index.html into {OUT}")
         finally:

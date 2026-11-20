@@ -31,6 +31,12 @@
       "content_type": "text/javascript;charset=utf-8",
       "cache_control": "public, max-age=31536000, immutable",
       "etag": "\"d1b323c3c18f73c3\""
+    },
+    "/logo-full-r98jn826.png": {
+      "file": "logo-full-r98jn826.png",
+      "content_type": "image/png",
+      "cache_control": "public, max-age=31536000, immutable",
+      "etag": "\"26e248d55288c918\""
     }
   },
   "fallback": {
