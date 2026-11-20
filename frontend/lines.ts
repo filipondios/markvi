@@ -1,0 +1,194 @@
+// Mapa entre las líneas del Markdown y los bloques renderizados. Se separa del
+// DOM para poder probar el cálculo sin navegador.
+
+export interface SourceLineRange {
+  line: number;
+  endLine: number;
+}
+
+export interface BlockBox extends SourceLineRange {
+  top: number;
+  bottom: number;
+}
+
+export interface LineToken {
+  type: string;
+  raw: string;
+  line?: number;
+  endLine?: number;
+  tokens?: LineToken[];
+  items?: LineToken[];
+}
+
+/** Posición inicial de cada línea (índice 0 = línea 1). */
+export function lineStarts(source: string): number[] {
+  const starts = [0];
+  for (let index = 0; index < source.length; index++) {
+    if (source.charCodeAt(index) === 10) starts.push(index + 1);
+  }
+  return starts;
+}
+
+export function lineAtOffset(starts: readonly number[], offset: number): number {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (starts[middle]! <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return low + 1;
+}
+
+export function lineStartOffset(starts: readonly number[], line: number): number {
+  const index = Math.min(Math.max(1, line), starts.length) - 1;
+  return starts[index] ?? 0;
+}
+
+/**
+ * Añade `line` y `endLine` a los tokens de marked, en orden de documento.
+ *
+ * `skip` son los caracteres iniciales de `source` que el lexer no vio (el front
+ * matter): la búsqueda empieza después. Sin él, un bloque cuyo texto coincide con
+ * una línea del YAML se localizaría dentro del front matter.
+ */
+export function annotateTokenLines(
+  tokens: readonly LineToken[],
+  source: string,
+  skip = 0,
+): void {
+  // marked normaliza los finales de línea en `raw`; se busca sobre una copia
+  // normalizada para que CRLF no desplace las líneas.
+  const flat = source.replace(/\r\n?/g, "\n");
+  const starts = lineStarts(flat);
+  // `skip` se mide en el texto original: se pasa a coordenadas del normalizado.
+  let cursor = skip > 0 ? source.slice(0, skip).replace(/\r\n?/g, "\n").length : 0;
+
+  for (const token of tokens) {
+    // marked-footnote antepone un token `footnotes` cuyo `raw` («Footnotes») no
+    // existe en el texto: no es un bloque del documento y no debe mover el cursor.
+    if (token.type === "footnotes") continue;
+
+    const found = flat.indexOf(token.raw, cursor);
+    // Un `raw` que no está en el texto tampoco avanza el cursor: inventar su
+    // longitud desplazaría todos los bloques siguientes.
+    if (found < 0) {
+      setRange(token, cursor, starts);
+      continue;
+    }
+    setRange(token, found, starts);
+    cursor = found + token.raw.length;
+    if (token.type === "list") annotateList(token, flat, found, starts);
+  }
+}
+
+function annotateList(
+  list: LineToken,
+  source: string,
+  start: number,
+  starts: readonly number[],
+): void {
+  let cursor = start;
+  for (const item of list.items ?? []) {
+    const found = source.indexOf(item.raw, cursor);
+    const itemStart = found >= 0 ? found : cursor;
+    setRange(item, itemStart, starts);
+    cursor = itemStart + item.raw.length;
+    annotateChildren(item, source, itemStart, starts);
+  }
+}
+
+function annotateChildren(
+  item: LineToken,
+  source: string,
+  start: number,
+  starts: readonly number[],
+): void {
+  let cursor = start;
+  for (const child of item.tokens ?? []) {
+    const found = source.indexOf(child.raw, cursor);
+    const childStart = found >= 0 ? found : cursor;
+    setRange(child, childStart, starts);
+    cursor = childStart + child.raw.length;
+    if (child.type === "list") annotateList(child, source, childStart, starts);
+  }
+}
+
+function setRange(token: LineToken, start: number, starts: readonly number[]): void {
+  token.line = lineAtOffset(starts, start);
+  token.endLine = lineAtOffset(starts, start + Math.max(0, token.raw.length - 1));
+}
+
+/**
+ * Quita el front matter YAML inicial (`---` … `---` o `...`). Devuelve el texto
+ * íntegro cuando no hay delimitador de apertura o falta el de cierre: entonces
+ * el `---` inicial es simplemente una línea horizontal.
+ */
+export function splitFrontMatter(source: string): string {
+  const open = /^---[ \t]*\r?\n/.exec(source);
+  if (!open || open.index !== 0) return source;
+  const close = /^(?:---|\.\.\.)[ \t]*\r?\n/m.exec(source.slice(open[0].length));
+  if (!close) return source;
+  return source.slice(open[0].length + close.index + close[0].length);
+}
+
+/**
+ * Índice del último bloque cuyo inicio queda por encima de `y`. Los bloques
+ * anidados van después de su contenedor, así que el más específico gana.
+ */
+export function pickBlockIndex(blocks: readonly BlockBox[], y: number): number {
+  if (blocks.length === 0) return -1;
+
+  let index = 0;
+  for (const [position, block] of blocks.entries()) {
+    if (block.top <= y) index = position;
+  }
+  return index;
+}
+
+/** Interpola la línea dentro de un bloque largo según la altura recorrida. */
+export function interpolateLine(block: BlockBox, y: number): number {
+  const height = block.bottom - block.top;
+  const fraction = height > 0 ? Math.min(1, Math.max(0, (y - block.top) / height)) : 0;
+  return Math.round(block.line + (block.endLine - block.line) * fraction);
+}
+
+export function sourceLineAt(blocks: readonly BlockBox[], y: number): number | undefined {
+  const index = pickBlockIndex(blocks, y);
+  const block = blocks[index];
+  return block ? interpolateLine(block, y) : undefined;
+}
+
+/** Mueve gradualmente la referencia hacia el borde inferior al agotarse el scroll. */
+export function readingReferenceY(
+  reference: number,
+  viewportBottom: number,
+  scrollTop: number,
+  maxScroll: number,
+): number {
+  if (maxScroll <= 1 || viewportBottom <= reference) return reference;
+  const transition = viewportBottom - reference;
+  const remaining = maxScroll - scrollTop;
+  const progress = Math.min(1, Math.max(0, (transition - remaining) / transition));
+  return reference + transition * progress;
+}
+
+/** Cursor de lectura sincronizado con scroll, con inicio y final progresivos. */
+export function readingBlockIndex(
+  blocks: readonly BlockBox[],
+  y: number,
+  scrollTop: number,
+  maxScroll: number,
+  viewportBottom?: number,
+): number {
+  if (blocks.length === 0) return -1;
+  if (maxScroll <= 1) return pickBlockIndex(blocks, y);
+  // En los topes el cursor se fuerza a los extremos: la línea de referencia
+  // (30 %) nunca alcanzaría los bloques de arriba/abajo.
+  if (scrollTop <= 1) return 0;
+  if (maxScroll - scrollTop <= 1) return blocks.length - 1;
+  const readingY = viewportBottom === undefined
+    ? y
+    : readingReferenceY(y, viewportBottom, scrollTop, maxScroll);
+  return pickBlockIndex(blocks, readingY);
+}

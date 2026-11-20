@@ -3,13 +3,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "cargo run --quiet --manifest-path rust/Cargo.toml --bin markvi -- ./example",
-    "build": "cargo build --release --manifest-path rust/Cargo.toml",
-    "build:frontend": "python3 rust/recording/capture_assets.py",
-    "test": "bun test",
-    "test:rust": "cargo test --manifest-path rust/Cargo.toml",
+    "start": "bun run frontend:build && cargo run --quiet --bin markvi -- ./example",
+    "frontend:build": "bun run scripts/build-frontend.ts",
+    "build": "bun run frontend:build && cargo build --release",
+    "test": "cargo test && bun test frontend/",
+    "test:e2e": "bun run frontend:build && cargo build --bin markvi && node tests/e2e/browser_e2e.mjs",
     "typecheck": "bun check",
-    "demo": "bun run scripts/demo.ts"
+    "demo": "bun run frontend:build && cargo build --bin markvi && bun run scripts/demo.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

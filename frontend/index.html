@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>markvi</title>
+    <link rel="icon" type="image/png" href="./img/logo-icon.png" />
+    <link rel="preload" href="./fonts/ObelMono-VF.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="./style.css" />
+    <script>
+      // Arranque: las peticiones que la app necesita nada más cargar salen ya, sin
+      // esperar a descargar y evaluar el bundle. La app las recoge con `takeEarly`
+      // (config.ts); si no coinciden con lo que pide, simplemente no se usan.
+      // Estos literales deben igualar VIEW_PREFIX / FILES_URL / CONFIG_URL de shared/paths.ts.
+      (function () {
+        var boot = (window.__boot = { t: Date.now(), r: {} });
+        function early(url, init) {
+          var request = fetch(url, init);
+          request.catch(function () {});
+          boot.r[url] = request;
+        }
+        early("/api/config", { cache: "no-store" });
+        var path = location.pathname;
+        if (path.indexOf("/view/") === 0 && path.length > 6) {
+          try {
+            early("/api/file?path=" + encodeURIComponent(decodeURIComponent(path.slice(6))));
+          } catch (error) {}
+        }
+        if (path === "/" || path.indexOf("/view/") === 0) early("/api/tree");
+      })();
+    </script>
+  </head>
+  <body>
+    <header id="bar">
+      <a id="brand" href="/">markvi</a>
+      <div id="tabs" role="tablist" aria-label="Tabs" hidden></div>
+    </header>
+    <main id="content"></main>
+    <div id="prompt" hidden>
+      <span id="prompt-prefix"></span>
+      <input
+        id="prompt-input"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Command"
+      />
+    </div>
+    <footer id="status" role="status" aria-live="polite">
+      <span id="status-mode" data-mode="index">Index</span>
+      <span id="status-path"></span>
+      <span id="status-dirty" hidden aria-hidden="true">●</span>
+      <span id="status-vim"></span>
+      <span id="status-state">Ready</span>
+      <span id="status-message"></span>
+      <span id="status-tasks" title="Completed tasks" aria-hidden="true"></span>
+      <span id="status-position" aria-hidden="true"></span>
+      <span id="status-actions"></span>
+    </footer>
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>

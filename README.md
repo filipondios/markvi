@@ -1,6 +1,6 @@
-<p align="center"><img src="./public/img/logo-full.png" alt="opios" width="150"></p>
+<p align="center"><img src="./frontend/img/logo-full.png" alt="opios" width="150"></p>
 <p align="center"><em>A local Markdown viewer and editor for your browser with Vim-style keybindings.</em></p>
-<p align="center"><img src="./public/img/demo.gif" alt="MarkVi in action"></p>
+<p align="center"><img src="./frontend/img/demo.gif" alt="MarkVi in action"></p>
 
 ## Usage
 
@@ -169,15 +169,16 @@ Requests that modify files (`POST`, `PUT`, `DELETE`) are rejected when their `Or
 ## Build as a Command-Line Tool
 
 ```
-bun run build # cargo build --release -> rust/target/release/markvi
+bun install                  # development dependencies (frontend build)
+bun run build                # builds the frontend, then the Rust release binary
 install -m 755 rust/target/release/markvi ~/.local/bin/markvi
-markvi ~/notes # replace notes with your directory
+markvi ~/notes               # replace notes with your directory
 ```
 
-The binary does not require `bun` at runtime. It reads the compiled frontend from `rust/assets/` using the absolute path recorded when it was built, so keep that directory available when running an installed binary. Bun is still needed only to regenerate those assets (`bun run build:frontend`) and to run the frontend tests.
+The binary embeds the compiled frontend, so it does not need `bun`, `node`, or any asset directory at runtime and can run from any working directory. `bun run frontend:build` alone regenerates `frontend/dist/`; `build` always runs it before Cargo so the embedded assets match the sources. `bun run test` runs the Rust and frontend tests; `bun run test:e2e` runs the browser suite against Rust; `bun run demo` regenerates screenshots using the Rust server.
 
 ## Licenses
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for the full license text.
 
-The interface uses **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors, authored by Cody Collier), self-hosted in `public/fonts/` under the [SIL Open Font License 1.1](public/fonts/OFL,txt). The full license text is available in `public/fonts/OFL.txt`, and the authors are listed in `public/fonts/AUTHORS.txt`.
+The interface uses **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors, authored by Cody Collier), self-hosted in `frontend/fonts/` under the [SIL Open Font License 1.1](frontend/fonts/OFL.txt). The full license text is available in `frontend/fonts/OFL.txt`, and the authors are listed in `frontend/fonts/AUTHORS.txt`.

@@ -1,0 +1,108 @@
+// Búsqueda de texto en el documento renderizado. Las coincidencias se calculan
+// sobre el texto de los nodos y se convierten en `Range`, de modo que el
+// resaltado no modifica el DOM ni el mapa de bloques.
+
+export interface MatchOffset {
+  start: number;
+  end: number;
+}
+
+export interface TextNodeSpan {
+  node: Text;
+  start: number;
+  end: number;
+  block: Element | null;
+}
+
+export interface TextMap {
+  text: string;
+  spans: TextNodeSpan[];
+}
+
+export function matchOffsets(
+  text: string,
+  query: string,
+  caseSensitive: boolean,
+): MatchOffset[] {
+  if (!query) return [];
+
+  const haystack = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const matches: MatchOffset[] = [];
+
+  let index = 0;
+  while (index <= haystack.length - needle.length) {
+    const found = haystack.indexOf(needle, index);
+    if (found < 0) break;
+    matches.push({ start: found, end: found + needle.length });
+    index = found + Math.max(1, needle.length);
+  }
+  return matches;
+}
+
+/**
+ * Texto plano del contenido y mapa a sus nodos. Se inserta un salto entre
+ * bloques distintos para que una coincidencia no cruce de un párrafo a otro;
+ * como el salto no pertenece a ningún nodo, `rangeFor` la descarta.
+ */
+export function buildTextMap(root: Node): TextMap {
+  const spans: TextNodeSpan[] = [];
+  let text = "";
+  let lastBlock: Element | null = null;
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const data = (node as Text).data;
+    if (data.length === 0) continue;
+
+    const block = (node as Text).parentElement?.closest("[data-line]") ?? null;
+    if (lastBlock !== block) {
+      if (text.length > 0) text += "\n";
+      lastBlock = block;
+    }
+
+    const start = text.length;
+    text += data;
+    spans.push({ node: node as Text, start, end: text.length, block });
+  }
+
+  return { text, spans };
+}
+
+function spanAt(
+  spans: readonly TextNodeSpan[],
+  offset: number,
+  accepts: (span: TextNodeSpan) => boolean,
+): TextNodeSpan | undefined {
+  let low = 0;
+  let high = spans.length - 1;
+  let found: TextNodeSpan | undefined;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const span = spans[middle]!;
+    if (span.start <= offset) {
+      found = span;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return found && accepts(found) ? found : undefined;
+}
+
+export function rangeFor(
+  spans: readonly TextNodeSpan[],
+  start: number,
+  end: number,
+): Range | undefined {
+  // Los tramos están ordenados y no se solapan: búsqueda binaria (antes `find` lineal
+  // por coincidencia, cuadrático en documentos grandes con muchas coincidencias).
+  const from = spanAt(spans, start, (span) => start < span.end);
+  const to = spanAt(spans, end - 1, (span) => end <= span.end);
+  if (!from || !to || from.block !== to.block) return undefined;
+
+  const range = document.createRange();
+  range.setStart(from.node, start - from.start);
+  range.setEnd(to.node, end - to.start);
+  return range;
+}
