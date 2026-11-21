@@ -1,9 +1,9 @@
-//! Búsqueda y backlinks. Espejo de `src/search.ts` y `src/backlinks.ts`.
+//! Búsqueda y backlinks literales sobre Markdown.
 //! El query se escapa en TS (`escapeRegExp`), así que aquí es búsqueda literal:
 //! no se necesita el crate `regex`. El plegado de-case replica `/i` sin `u` de Bun.
 
 use crate::{
-    core::pure::{is_case_sensitive, is_markdown_path, wiki_links, WikiIndex},
+    core::pure::{self, is_case_sensitive, is_markdown_path, wiki_links, WikiIndex},
     fs::{self, MarkdownEntry},
 };
 use futures_util::{stream, StreamExt};
@@ -59,10 +59,6 @@ fn fold(c: char) -> char {
             }
         }
     }
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.chars().map(|c| c.len_utf16()).sum()
 }
 
 fn split_lines(text: &str) -> Vec<&str> {
@@ -176,10 +172,10 @@ pub fn build_hit(
 ) -> crate::core::pure::SearchHit {
     let units: Vec<u16> = raw.encode_utf16().collect();
     let trimmed_start = raw.trim_start();
-    let lead = units.len() - utf16_len(trimmed_start);
+    let lead = units.len() - pure::utf16_len(trimmed_start);
     let trimmed_end = raw.trim_end();
     let mut start = lead;
-    let mut end = utf16_len(trimmed_end);
+    let mut end = pure::utf16_len(trimmed_end);
     let mut cut_end = false;
 
     if end - start > MAX_TEXT {
@@ -536,7 +532,7 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
         for (start, full, ref_) in wiki_links(&text) {
             links.push(FoundLink {
                 line: index + 1,
-                range: (start, start + utf16_len(&full)),
+                range: (start, start + pure::utf16_len(&full)),
                 kind: LinkKind::Wiki,
                 target: ref_.target,
             });
@@ -571,39 +567,8 @@ pub fn posix_normalize(path: &str) -> String {
     stack.join("/")
 }
 
-fn hex_val(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
 fn decode_percent(path: &str) -> String {
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let decoded = if bytes[index] == b'%' && index + 2 < bytes.len() {
-            hex_val(bytes[index + 1])
-                .zip(hex_val(bytes[index + 2]))
-                .map(|(high, low)| (high << 4) | low)
-        } else {
-            None
-        };
-        match decoded {
-            Some(byte) => {
-                out.push(byte);
-                index += 3;
-            }
-            None => {
-                out.push(bytes[index]);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    pure::percent_decode(path).unwrap_or_else(|| path.to_string())
 }
 
 pub fn markdown_target(destination: &str, from: &str) -> Option<String> {

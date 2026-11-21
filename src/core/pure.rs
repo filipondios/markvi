@@ -21,6 +21,32 @@ pub fn is_case_sensitive(query: &str) -> bool {
     query != query.to_lowercase()
 }
 
+pub(crate) fn utf16_len(text: &str) -> usize {
+    text.chars().map(|c| c.len_utf16()).sum()
+}
+
+/// Decodificación estricta de `%XX`; `None` si hay un escape inválido.
+pub(crate) fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let pair = value.get(index + 1..index + 3)?;
+            if !pair.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            let byte = u8::from_str_radix(pair, 16).ok()?;
+            out.push(byte);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 pub fn normalize_path(path: &str) -> String {
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("./").unwrap_or(&path);

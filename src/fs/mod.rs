@@ -1,5 +1,4 @@
-//! Confinamiento al root y escrituras atómicas. Espejo de `src/files.ts` y `src/atomic.ts`.
-//! Diseño de seguridad: rust/fs/SECURITY-DESIGN.md (revisado, sin hallazgos altos).
+//! Confinamiento al root y escrituras atómicas.
 
 use std::{
     collections::HashMap,
@@ -33,7 +32,7 @@ impl HttpError {
 
 pub type FsResult<T> = Result<T, HttpError>;
 
-fn ignored(name: &str) -> bool {
+pub(crate) fn is_ignored(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
 }
 
@@ -91,7 +90,7 @@ pub fn segments_inside(root: &Path, target: &Path) -> Option<Vec<String>> {
 fn check(root: &Path, target: &Path) -> FsResult<Vec<String>> {
     let segments = segments_inside(root, target)
         .ok_or_else(|| HttpError::new(403, "Path outside the root directory."))?;
-    if segments.iter().any(|part| ignored(part)) {
+    if segments.iter().any(|part| is_ignored(part)) {
         return Err(HttpError::new(404, "File not found."));
     }
     Ok(segments)
@@ -181,7 +180,7 @@ pub async fn resolve_new(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
     let target = resolve(root, path);
     let segments = segments_inside(root, &target)
         .ok_or_else(|| HttpError::new(403, "Path outside the root directory."))?;
-    if segments.iter().any(|part| ignored(part)) {
+    if segments.iter().any(|part| is_ignored(part)) {
         return Err(HttpError::new(
             400,
             "Hidden files and folders are not allowed.",
@@ -194,7 +193,7 @@ pub async fn resolve_new(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
             if real != root {
                 let inside = segments_inside(root, &real)
                     .ok_or_else(|| HttpError::new(403, "Path outside the root directory."))?;
-                if inside.iter().any(|part| ignored(part)) {
+                if inside.iter().any(|part| is_ignored(part)) {
                     return Err(HttpError::new(403, "Path outside the root directory."));
                 }
             }
@@ -263,7 +262,7 @@ async fn walk(real_root: &Path, root_dir: &Path, out: &mut Vec<MarkdownEntry>) {
         let mut names = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !ignored(&name) {
+            if !is_ignored(&name) {
                 names.push((name, entry));
             }
         }
@@ -301,7 +300,7 @@ async fn walk(real_root: &Path, root_dir: &Path, out: &mut Vec<MarkdownEntry>) {
                 Err(_) => continue,
             };
             let inside = match segments_inside(real_root, &real) {
-                Some(parts) if !parts.iter().any(|p| ignored(p)) => parts,
+                Some(parts) if !parts.iter().any(|p| is_ignored(p)) => parts,
                 _ => continue,
             };
             if inside.is_empty() {

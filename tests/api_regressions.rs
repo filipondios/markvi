@@ -116,6 +116,29 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn guard_y_fallback_no_cambian_con_el_middleware() {
+    let fixture = Fixture::new();
+    let bad_host = fixture
+        .request("GET /api/tree HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
+    assert!(bad_host.contains("403 Forbidden"), "{bad_host:?}");
+    assert!(bad_host.contains("Host not allowed."), "{bad_host:?}");
+
+    let bad_origin = fixture.request(
+        "POST /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nOrigin: http://evil.example\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(bad_origin.contains("403 Forbidden"), "{bad_origin:?}");
+    assert!(bad_origin.contains("Origin not allowed."), "{bad_origin:?}");
+
+    let fallback = fixture.request(
+        "POST /no-existe HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(fallback.contains("404 Not Found"), "{fallback:?}");
+    assert!(!fallback.to_lowercase().contains("allow:"), "{fallback:?}");
+}
+
+#[test]
 fn move_por_http_mueve_y_rechaza_destino_existente() {
     let fixture = Fixture::new();
     fs::write(fixture.root.join("origen.md"), "contenido").unwrap();

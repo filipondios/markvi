@@ -6,12 +6,13 @@ use crate::{
     core::{hash, pure},
     fs::{self, HttpError, Locks},
     search,
-    watch::FileWatcher,
+    watch::SseHub,
 };
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
     http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response, Sse},
 };
 use serde_json::{json, Value};
@@ -22,7 +23,6 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
@@ -226,7 +226,7 @@ pub struct AppState {
     pub port: u16,
     pub config_path: Arc<PathBuf>,
     pub locks: Arc<Locks>,
-    pub watcher: Arc<Mutex<FileWatcher>>,
+    pub sse: Arc<SseHub>,
     pub assets: Arc<StaticAssets>,
     hosts: Arc<Vec<String>>,
     origins: Arc<Vec<String>>,
@@ -237,7 +237,7 @@ impl AppState {
         root: PathBuf,
         port: u16,
         config_path: PathBuf,
-        watcher: FileWatcher,
+        sse: Arc<SseHub>,
         assets: StaticAssets,
     ) -> Self {
         let suffix = if port == 80 {
@@ -258,15 +258,11 @@ impl AppState {
             port,
             config_path: Arc::new(config_path),
             locks: Arc::new(Locks::default()),
-            watcher: Arc::new(Mutex::new(watcher)),
+            sse,
             assets: Arc::new(assets),
             hosts: Arc::new(hosts),
             origins: Arc::new(origins),
         }
-    }
-
-    pub fn watcher_handle(&self) -> Arc<Mutex<FileWatcher>> {
-        self.watcher.clone()
     }
 
     fn guard(&self, req: &Request) -> Result<(), ApiError> {
@@ -333,14 +329,15 @@ async fn body_json(req: Request) -> Result<Value, ApiError> {
 
 // ---- handlers -------------------------------------------------------------
 
-pub async fn tree_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
+pub async fn tree_get(State(state): State<AppState>, _req: Request) -> Result<Response, ApiError> {
     let files = fs::list_markdown(&state.root).await;
     Ok(json_response(200, json!({ "files": files }), NO_STORE))
 }
 
-pub async fn config_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
+pub async fn config_get(
+    State(state): State<AppState>,
+    _req: Request,
+) -> Result<Response, ApiError> {
     let loaded: LoadedConfig = config::load_config(&state.config_path).await;
     Ok(json_response(
         200,
@@ -350,7 +347,6 @@ pub async fn config_get(State(state): State<AppState>, req: Request) -> Result<R
 }
 
 pub async fn search_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let query = query_param(&req, "q").unwrap_or_default();
     let query = query.trim();
     if query.chars().count() > MAX_QUERY {
@@ -368,7 +364,6 @@ pub async fn backlinks_get(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     markdown_file(&state, query_param(&req, "path")).await?;
     let path = query_param(&req, "path").unwrap_or_default();
     let target = search::posix_normalize(&pure::normalize_path(&path));
@@ -382,7 +377,6 @@ pub async fn backlinks_get(
 }
 
 pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let file = markdown_file(&state, query_param(&req, "path")).await?;
     let content = fs::read_lossy(&file).await?;
     let etag = hash::etag(&content);
@@ -396,7 +390,6 @@ pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Res
 }
 
 pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let create = query_param(&req, "create").as_deref() == Some("1");
     let file = if create {
         let file = fs::resolve_writable(&state.root, query_param(&req, "path").as_deref()).await?;
@@ -442,7 +435,6 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
 }
 
 pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let path = query_param(&req, "path");
     let path = path.as_deref().unwrap_or("");
     if path.is_empty() || !pure::is_markdown_path(path) {
@@ -468,7 +460,6 @@ pub async fn file_delete(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let (real, entry) =
         fs::resolve_entry(&state.root, query_param(&req, "path").as_deref()).await?;
     if !pure::is_markdown_path(&real.to_string_lossy()) {
@@ -543,7 +534,6 @@ async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiEr
 }
 
 pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let payload = body_json(req).await?;
     let from = payload.get("from").and_then(Value::as_str);
     let to = payload.get("to").and_then(Value::as_str);
@@ -575,10 +565,12 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     .await
 }
 
-pub async fn events_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
-    let (receiver, cancel, guard) = state.watcher.lock().await.hub().subscribe();
-    let stream = state.watcher.lock().await.hub().stream(
+pub async fn events_get(
+    State(state): State<AppState>,
+    _req: Request,
+) -> Result<Response, ApiError> {
+    let (receiver, cancel, guard) = state.sse.subscribe();
+    let stream = state.sse.stream(
         receiver,
         cancel,
         std::time::Duration::from_millis(pure::SSE_HEARTBEAT_MS),
@@ -607,7 +599,6 @@ async fn files_dispatch(State(state): State<AppState>, req: Request) -> Result<R
 }
 
 pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let encoded = req
         .uri()
         .path()
@@ -723,26 +714,7 @@ fn mime_for(path: &Path) -> &'static str {
 }
 
 fn percent_decode(value: &str) -> Result<String, ApiError> {
-    let bytes = value.as_bytes();
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = value.get(index + 1..index + 3);
-            let decoded = hex.and_then(|pair| u8::from_str_radix(pair, 16).ok());
-            match decoded {
-                Some(byte) => {
-                    out.push(byte);
-                    index += 3;
-                    continue;
-                }
-                None => return Err(ApiError::new(400, "Missing or invalid path.")),
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    pure::percent_decode(value).ok_or_else(|| ApiError::new(400, "Missing or invalid path."))
 }
 
 impl AppState {
@@ -774,20 +746,36 @@ async fn api_dispatch(State(state): State<AppState>, req: Request) -> Result<Res
     }
 }
 
+async fn guard_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    state.guard(&req)?;
+    Ok(next.run(req).await)
+}
+
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{any, get};
+
+    let guarded = axum::Router::new()
+        .route("/files/{*path}", any(files_dispatch))
+        .route("/api/{*path}", any(api_dispatch))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            guard_middleware,
+        ));
 
     axum::Router::new()
         .route("/", get(index_get))
         .route("/view/{*path}", get(index_get))
-        .route("/files/{*path}", any(files_dispatch))
-        .route("/api/{*path}", any(api_dispatch))
+        .merge(guarded)
         .fallback(asset_get)
         .with_state(state)
 }
 
 pub fn bind_addr(port: u16) -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], port))
+    SocketAddr::new(pure::HOSTNAME.parse().expect("HOSTNAME válido"), port)
 }
 
 #[cfg(test)]

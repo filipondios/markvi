@@ -1,4 +1,4 @@
-//! Validación de `config.toml`, espejo de `src/config.ts`. Nunca lanza:
+//! Validación de `config.toml`. Nunca lanza:
 //! lo inválido se ignora y se convierte en aviso observable en `/api/config`.
 
 use crate::core::pure::{self, Config, LeaderBinding, Theme, VimContext, VimMapping};

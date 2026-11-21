@@ -25,9 +25,9 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
-async fn shutdown(watcher: std::sync::Arc<tokio::sync::Mutex<FileWatcher>>) {
+async fn shutdown(mut watcher: FileWatcher) {
     watch::shutdown_signal().await;
-    watcher.lock().await.close();
+    watcher.close();
 }
 
 #[tokio::main]
@@ -55,14 +55,15 @@ async fn main() {
     let config_path = config::resolve_config_path(args.config.as_deref(), &env);
 
     let watcher = FileWatcher::new(&root);
+    let sse = watcher.hub();
     let state = api::AppState::new(
         root.clone(),
         args.port,
         config_path.clone(),
-        watcher,
+        sse,
         api::StaticAssets::new(),
     );
-    let shutdown_watcher = state.watcher_handle();
+    let shutdown_watcher = watcher;
     let app: Router = api::router(state);
 
     let addr: SocketAddr = api::bind_addr(args.port);

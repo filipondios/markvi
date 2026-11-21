@@ -1,4 +1,4 @@
-//! Watcher y canal SSE. Espejo de `src/watch.ts` y `events()` de `src/api.ts`.
+//! Watcher y canal SSE.
 //! `notify` emite eventos de directorio; encima se mantiene el conjunto de
 //! archivos conocidos, el debounce de 80 ms y los alias por symlink.
 
@@ -27,7 +27,6 @@ use tokio::{
 use tokio_stream::wrappers::BroadcastStream;
 
 pub const DEBOUNCE_MS: u64 = 80;
-pub const SSE_HEARTBEAT_MS: u64 = 25_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -132,7 +131,7 @@ impl FileWatcher {
                                 Ok(path) => path.to_string_lossy().replace('\\', "/"),
                                 Err(_) => continue,
                             };
-                            if path.split('/').any(fs_ignored) {
+                            if path.split('/').any(fs::is_ignored) {
                                 continue;
                             }
                             if crate::core::pure::is_markdown_path(&path) {
@@ -273,10 +272,6 @@ impl Drop for FileWatcher {
     }
 }
 
-fn fs_ignored(name: &str) -> bool {
-    name.starts_with('.') || name == "node_modules"
-}
-
 fn index_aliases(aliases: &mut HashMap<String, Vec<String>>, entries: &[MarkdownEntry]) {
     aliases.clear();
     for entry in entries {
@@ -338,7 +333,7 @@ async fn watch_dirs(
             Err(_) => continue,
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if !fs_ignored(&entry.file_name().to_string_lossy())
+            if !fs::is_ignored(&entry.file_name().to_string_lossy())
                 && entry.file_type().await.is_ok_and(|kind| kind.is_dir())
             {
                 pending.push(entry.path());
