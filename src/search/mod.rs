@@ -303,24 +303,14 @@ where
         let search_file = Arc::clone(&search_file);
         async move {
             let file = root.join(&path);
-            // Una sola ida al pool de blocking por archivo: leer y buscar juntos.
-            let found = tokio::task::spawn_blocking(move || {
-                let bytes = match std::fs::read(&file) {
-                    Ok(bytes) => bytes,
-                    Err(_) => return empty_hits(),
-                };
-                if bytes.len() as u64 > max_file_bytes {
-                    return empty_hits();
+            let found = match fs::read_lossy(&file).await {
+                Ok(text) if text.len() as u64 <= max_file_bytes => {
+                    tokio::task::spawn_blocking(move || search_file(&path, &text, per_file))
+                        .await
+                        .unwrap_or_else(|_| empty_hits())
                 }
-                // Igual que `read_to_string`: un archivo no UTF-8 se omite.
-                let text = match String::from_utf8(bytes) {
-                    Ok(text) => text,
-                    Err(_) => return empty_hits(),
-                };
-                search_file(&path, &text, per_file)
-            })
-            .await
-            .unwrap_or_else(|_| empty_hits());
+                _ => empty_hits(),
+            };
             (index, found)
         }
     });

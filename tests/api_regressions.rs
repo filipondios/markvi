@@ -114,6 +114,46 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn archivo_no_utf8_es_lossy_en_get_put_ifmatch_y_busqueda() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("nota.md"), b"palabra \xE9\n").unwrap();
+
+    let get = fixture.request(
+        "GET /api/file?path=nota.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(get.contains("200 OK"), "{get:?}");
+    let etag = get
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("etag:")
+                .then(|| line.split_once(':').unwrap().1.trim().to_string())
+        })
+        .expect("GET sin ETag");
+
+    let search = fixture.request(
+        "GET /api/search?q=palabra HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(
+        search.contains("nota.md"),
+        "la búsqueda omitió el archivo: {search:?}"
+    );
+
+    let put = fixture.request(
+        format!(
+            "PUT /api/file?path=nota.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-Match: {etag}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            fixture.port
+        ),
+    );
+    assert!(
+        put.contains("204 No Content"),
+        "PUT If-Match falló: {put:?}"
+    );
+}
+
+#[test]
 fn files_sirve_binarios_byte_a_byte_y_markdown_sigue_intacto() {
     let fixture = Fixture::new();
     let png = [0x89, 0xFF, 0x00, 0x02, 0xC3, 0x28];

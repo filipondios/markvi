@@ -97,6 +97,12 @@ fn check(root: &Path, target: &Path) -> FsResult<Vec<String>> {
     Ok(segments)
 }
 
+/// Lectura coherente con `GET`: bytes inválidos se sustituyen, no se omiten.
+pub async fn read_lossy(path: &Path) -> std::io::Result<String> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn missing_path() -> HttpError {
     HttpError::new(400, "Missing or invalid path.")
 }

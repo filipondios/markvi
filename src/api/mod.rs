@@ -375,7 +375,7 @@ pub async fn backlinks_get(
 pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     state.guard(&req)?;
     let file = markdown_file(&state, query_param(&req, "path")).await?;
-    let content = String::from_utf8_lossy(&tokio::fs::read(&file).await?).into_owned();
+    let content = fs::read_lossy(&file).await?;
     Ok(text_response(
         200,
         "text/plain; charset=utf-8",
@@ -402,7 +402,7 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
 
     let result = fs::with_file_lock(&state.locks, &file.to_string_lossy(), async {
         if let Some(if_match) = if_match {
-            let current = match tokio::fs::read_to_string(&file).await {
+            let current = match fs::read_lossy(&file).await {
                 Ok(text) => text,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Err(ApiError::new(404, "File not found."));
@@ -460,7 +460,7 @@ pub async fn file_delete(
     fs::with_file_lock(&state.locks, &real.to_string_lossy(), async {
         if let Some(if_match) = if_match {
             if if_match != "*" {
-                let content = tokio::fs::read_to_string(&real).await?;
+                let content = fs::read_lossy(&real).await?;
                 let etag = hash::etag(&content);
                 if if_match != etag {
                     return Ok(json_response(
