@@ -32,7 +32,10 @@ export interface ChannelLike {
 }
 
 export interface SourceLike {
-  addEventListener(type: "open" | "message", listener: (event: { data?: string }) => void): void;
+  addEventListener(
+    type: "open" | "message" | "resync",
+    listener: (event: { data?: string }) => void,
+  ): void;
   close(): void;
 }
 
@@ -144,6 +147,14 @@ export function createEventHub(options: EventHubOptions): EventHub {
       opened = true;
       options.onResync(full);
       if (full) relay({ kind: "resync" });
+    });
+
+    // El servidor avisa de que el buffer de eventos se desbordó: algo cambió
+    // sin que llegara el aviso, así que hay que revisar el estado completo.
+    stream.addEventListener("resync", () => {
+      if (closed) return;
+      options.onResync(true);
+      relay({ kind: "resync" });
     });
 
     stream.addEventListener("message", (message) => {

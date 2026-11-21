@@ -263,6 +263,44 @@ async fn sse_streams_events_heartbeat_reconnect_and_cancel_without_blocking() {
     server.abort();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_resync_tras_muchos_archivos_y_conexion_sigue_abierta() {
+    let temp = Temp::new();
+    temp.write("base.md", "base");
+    let mut watcher = FileWatcher::new(temp.path());
+    let hub = watcher.hub();
+    let app = Router::new()
+        .route("/api/events", get(events_handler))
+        .with_state(hub);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut client = tokio::task::spawn_blocking(move || open_sse(port))
+        .await
+        .unwrap();
+    for index in 0..1200 {
+        temp.write(&format!("n{index}.md"), "x");
+    }
+
+    let vault = temp.path().to_path_buf();
+    let (client, first, second) = tokio::task::spawn_blocking(move || {
+        let first = read_until(&mut client, "event: resync", 5000);
+        std::fs::write(vault.join("despues.md"), "x").unwrap();
+        let second = read_until(&mut client, "\"path\":\"despues.md\"", 5000);
+        (client, first, second)
+    })
+    .await
+    .unwrap();
+
+    assert!(first.contains("event: resync\ndata: {}\n\n"), "{first:?}");
+    assert!(second.contains("\"path\":\"despues.md\""), "{second:?}");
+    drop(client);
+    watcher.close();
+    server.abort();
+}
+
 #[tokio::test]
 async fn sse_guard_removes_cancellation_when_stream_is_dropped() {
     let temp = Temp::new();

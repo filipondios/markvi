@@ -59,7 +59,7 @@ pub struct FileWatcher {
 
 impl FileWatcher {
     pub fn new(root: &Path) -> Self {
-        let (hub_tx, _) = broadcast::channel(256);
+        let (hub_tx, _) = broadcast::channel(1024);
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Input>();
         let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
         let closed = Arc::new(AtomicBool::new(false));
@@ -411,7 +411,14 @@ impl Stream for EventStream {
                 let json = serde_json::to_string(&event).expect("serializable event");
                 return Poll::Ready(Some(Ok(Event::default().data(json))));
             }
-            Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Ready(Some(Err(
+                tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
+            ))) => {
+                // El cliente perdió eventos: avisar para que reconsulte el estado,
+                // pero mantener la conexión abierta.
+                return Poll::Ready(Some(Ok(Event::default().event("resync").data("{}"))));
+            }
+            Poll::Ready(None) => return Poll::Ready(None),
             Poll::Pending => {}
         }
         match self.heartbeat.poll_tick(cx) {
@@ -440,5 +447,65 @@ pub async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::to_bytes,
+        response::{sse::Sse, IntoResponse},
+    };
+    use futures_util::StreamExt;
+
+    async fn render(event: axum::response::sse::Event) -> String {
+        let stream = futures_util::stream::once(async move { Ok::<_, Infallible>(event) });
+        let response = Sse::new(stream).into_response();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn lagged_emite_resync_y_el_stream_sigue_abierto() {
+        let (tx, _) = broadcast::channel::<DiskEvent>(2);
+        let hub = std::sync::Arc::new(SseHub::from_sender(tx.clone()));
+        let (receiver, cancel, guard) = hub.subscribe();
+        let mut stream = Box::pin(hub.stream(receiver, cancel, Duration::from_secs(3600), guard));
+
+        for index in 0..6 {
+            let _ = tx.send(DiskEvent {
+                kind: DiskEventKind::Change,
+                path: format!("{index}.md"),
+            });
+        }
+
+        let first = stream
+            .next()
+            .await
+            .expect("stream cerrado")
+            .expect("evento");
+        let rendered = render(first).await;
+        assert!(
+            rendered.contains("event: resync\ndata: {}\n\n"),
+            "{rendered:?}"
+        );
+
+        // El stream sigue abierto y entrega los eventos que quedaron en el buffer.
+        let mut saw_normal = false;
+        for _ in 0..8 {
+            let event = stream
+                .next()
+                .await
+                .expect("stream cerrado tras resync")
+                .expect("evento");
+            let rendered = render(event).await;
+            if !rendered.contains("event: resync") {
+                assert!(rendered.contains("data:"), "{rendered:?}");
+                saw_normal = true;
+                break;
+            }
+        }
+        assert!(saw_normal, "el stream solo emitía resync");
     }
 }
