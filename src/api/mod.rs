@@ -477,6 +477,53 @@ pub async fn file_delete(
     .await
 }
 
+/// Mueve `entry` a `target` con el candado ya tomado. `real` es el destino del
+/// enlace cuando `entry` es un symlink (solo Unix).
+async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
+    // `resolve_new` ocurrió antes del candado: el destino puede haberse creado.
+    match tokio::fs::symlink_metadata(target).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+        Ok(_) => {
+            return Err(ApiError::new(
+                409,
+                "A file or folder already exists at that path.",
+            ))
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let metadata = tokio::fs::symlink_metadata(entry).await?;
+        if metadata.file_type().is_symlink() {
+            let link = relative_path(target.parent().unwrap_or(Path::new("/")), real);
+            tokio::fs::symlink(link, target).await?;
+            tokio::fs::remove_file(entry).await?;
+            return Ok(());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = real;
+
+    // Para archivos regulares, enlace + borrado: nunca un rename sobre un
+    // destino aparecido entre la comprobación y la escritura.
+    match tokio::fs::hard_link(entry, target).await {
+        Ok(()) => tokio::fs::remove_file(entry).await?,
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 18 | 38 | 95)) => {
+            // Sistema sin enlaces duros: comportamiento anterior.
+            tokio::fs::rename(entry, target).await?;
+        }
+        Err(error) if error.raw_os_error() == Some(17) => {
+            return Err(ApiError::new(
+                409,
+                "A file or folder already exists at that path.",
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     state.guard(&req)?;
     let payload = body_json(req).await;
@@ -505,15 +552,7 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     let second = keys[1].clone();
     fs::with_file_lock(&locks_first, &first, async move {
         fs::with_file_lock(&locks_second, &second, async move {
-            let metadata = tokio::fs::symlink_metadata(&entry).await?;
-            if metadata.file_type().is_symlink() {
-                let link = relative_path(target.parent().unwrap_or(Path::new("/")), &real);
-                #[cfg(unix)]
-                tokio::fs::symlink(link, &target).await?;
-                tokio::fs::remove_file(&entry).await?;
-            } else {
-                tokio::fs::rename(&entry, &target).await?;
-            }
+            move_into(&real, &entry, &target).await?;
             Ok(empty_response(204, None))
         })
         .await
@@ -695,6 +734,83 @@ pub fn bind_addr(port: u16) -> SocketAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "markvi-move-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn status(error: ApiError) -> u16 {
+        match error {
+            ApiError::Http(status, _) => status,
+            other => panic!("error inesperado: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn move_no_sobrescribe_un_destino_que_aparece_bajo_el_candado() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "origen").unwrap();
+        std::fs::write(&target, "destino").unwrap();
+
+        let error = move_into(&source, &source, &target).await.unwrap_err();
+        assert_eq!(status(error), 409);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "destino");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
+    }
+
+    #[tokio::test]
+    async fn mueve_archivo_normal_y_enlace() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "contenido").unwrap();
+        move_into(&source, &source, &target).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
+        assert!(!source.exists());
+
+        #[cfg(unix)]
+        {
+            let real = dir.path().join("real.md");
+            let alias = dir.path().join("alias.md");
+            let target = dir.path().join("movido.md");
+            std::fs::write(&real, "# Destino\n").unwrap();
+            std::os::unix::fs::symlink("real.md", &alias).unwrap();
+            move_into(&real, &alias, &target).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "# Destino\n");
+            assert!(std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(!alias.exists());
+            assert!(real.exists());
+        }
+    }
 
     fn header(response: &Response, name: &str) -> String {
         response

@@ -114,6 +114,37 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn move_por_http_mueve_y_rechaza_destino_existente() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("origen.md"), "contenido").unwrap();
+    let body = r#"{"from":"origen.md","to":"destino.md"}"#;
+    let answer = fixture.request(format!(
+        "POST /api/move HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        fixture.port,
+        body.len()
+    ));
+    assert!(answer.contains("204 No Content"), "{answer:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("destino.md")).unwrap(),
+        "contenido"
+    );
+    assert!(!fixture.root.join("origen.md").exists());
+
+    let body = r#"{"from":"index.md","to":"destino.md"}"#;
+    let answer = fixture.request(format!(
+        "POST /api/move HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        fixture.port,
+        body.len()
+    ));
+    assert!(answer.contains("409 Conflict"), "{answer:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("destino.md")).unwrap(),
+        "contenido"
+    );
+    assert!(fixture.root.join("index.md").exists());
+}
+
+#[test]
 fn archivo_no_utf8_es_lossy_en_get_put_ifmatch_y_busqueda() {
     let fixture = Fixture::new();
     fs::write(fixture.root.join("nota.md"), b"palabra \xE9\n").unwrap();
