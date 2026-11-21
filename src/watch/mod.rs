@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -55,6 +55,7 @@ pub struct FileWatcher {
     watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
     closed: Arc<AtomicBool>,
     stop: Option<oneshot::Sender<()>>,
+    pending_timers: Arc<AtomicUsize>,
 }
 
 impl FileWatcher {
@@ -77,18 +78,18 @@ impl FileWatcher {
         };
 
         let init_root = root.to_path_buf();
-        let init_tx = hub_tx.clone();
         let init_events = event_tx.clone();
         tokio::spawn(async move {
             let entries = fs::list_markdown_entries(&init_root).await;
             let _ = init_events.send(Input::Init(entries));
-            let _ = init_tx; // el hub se comparte desde el constructor
         });
 
         let root = root.to_path_buf();
         let tx = hub_tx.clone();
         let flags = closed.clone();
         let loop_watcher = watcher.clone();
+        let pending_timers = Arc::new(AtomicUsize::new(0));
+        let loop_pending = pending_timers.clone();
         tokio::spawn(async move {
             let mut known: HashSet<String> = HashSet::new();
             let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
@@ -123,6 +124,9 @@ impl FileWatcher {
                                 continue;
                             }
                         };
+                        if matches!(event.kind, notify::EventKind::Access(_)) {
+                            continue;
+                        }
                         for path in event.paths {
                             let path = match path.strip_prefix(&root) {
                                 Ok(path) => path.to_string_lossy().replace('\\', "/"),
@@ -132,13 +136,16 @@ impl FileWatcher {
                                 continue;
                             }
                             if crate::core::pure::is_markdown_path(&path) {
-                                schedule(&mut timers, &event_tx, path, false);
+                                schedule(&mut timers, &loop_pending, &event_tx, path, false);
                             } else {
-                                schedule(&mut timers, &event_tx, path, true);
+                                schedule(&mut timers, &loop_pending, &event_tx, path, true);
                             }
                         }
                     }
                     Input::FileTimer(path) => {
+                        if timers.remove(&path).is_some() {
+                            loop_pending.fetch_sub(1, Ordering::Relaxed);
+                        }
                         let abs = root.join(&path);
                         if tokio::fs::symlink_metadata(&abs)
                             .await
@@ -173,7 +180,7 @@ impl FileWatcher {
                             Some(info) if info.is_file() => DiskEventKind::Change,
                             _ => DiskEventKind::Delete,
                         };
-                        known.retain(|item| item != &path);
+                        known.remove(&path);
                         if kind == DiskEventKind::Change {
                             known.insert(path.clone());
                         }
@@ -193,14 +200,16 @@ impl FileWatcher {
                         }
                     }
                     Input::DirTimer(path) => {
+                        if timers.remove(&path).is_some() {
+                            loop_pending.fetch_sub(1, Ordering::Relaxed);
+                        }
                         let abs = root.join(&path);
                         let info = tokio::fs::metadata(&abs).await.ok();
                         if info.as_ref().is_some_and(|info| info.is_file()) {
                             continue;
                         }
-                        let had_children = known
-                            .iter()
-                            .any(|item| item.starts_with(&format!("{path}/")));
+                        let prefix = format!("{path}/");
+                        let had_children = known.iter().any(|item| item.starts_with(&prefix));
                         if info.is_none() && !had_children {
                             continue;
                         }
@@ -220,6 +229,7 @@ impl FileWatcher {
             for (_, timer) in timers {
                 timer.abort();
             }
+            loop_pending.store(0, Ordering::Relaxed);
         });
 
         Self {
@@ -227,6 +237,7 @@ impl FileWatcher {
             watcher,
             closed,
             stop: Some(stop_tx),
+            pending_timers,
         }
     }
 
@@ -236,6 +247,10 @@ impl FileWatcher {
 
     pub fn hub(&self) -> Arc<SseHub> {
         self.hub.clone()
+    }
+
+    pub fn pending_timers(&self) -> usize {
+        self.pending_timers.load(Ordering::Relaxed)
     }
 
     pub fn close(&mut self) {
@@ -276,12 +291,14 @@ fn index_aliases(aliases: &mut HashMap<String, Vec<String>>, entries: &[Markdown
 
 fn schedule(
     timers: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    pending: &AtomicUsize,
     tx: &mpsc::UnboundedSender<Input>,
     path: String,
     directory: bool,
 ) {
     if let Some(previous) = timers.remove(&path) {
         previous.abort();
+        pending.fetch_sub(1, Ordering::Relaxed);
     }
     let tx = tx.clone();
     let key = path.clone();
@@ -293,6 +310,7 @@ fn schedule(
             Input::FileTimer(path)
         });
     });
+    pending.fetch_add(1, Ordering::Relaxed);
     timers.insert(key, handle);
 }
 
@@ -526,6 +544,22 @@ mod tests {
         response::{sse::Sse, IntoResponse},
     };
     use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn timers_vuelven_a_cero_tras_el_reposo() {
+        let temp = std::env::temp_dir().join(format!("markvi-timers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let mut watcher = FileWatcher::new(&temp);
+        let _events = watcher.subscribe();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        std::fs::write(temp.join("a.md"), "a").unwrap();
+        std::fs::create_dir(temp.join("sub")).unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(watcher.pending_timers(), 0);
+        watcher.close();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
 
     async fn render(event: axum::response::sse::Event) -> String {
         let stream = futures_util::stream::once(async move { Ok::<_, Infallible>(event) });

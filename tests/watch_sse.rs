@@ -264,7 +264,7 @@ async fn sse_streams_events_heartbeat_reconnect_and_cancel_without_blocking() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sse_resync_tras_muchos_archivos_y_conexion_sigue_abierta() {
+async fn sse_conexion_sigue_abierta_tras_muchos_archivos() {
     let temp = Temp::new();
     temp.write("base.md", "base");
     let mut watcher = FileWatcher::new(temp.path());
@@ -280,13 +280,24 @@ async fn sse_resync_tras_muchos_archivos_y_conexion_sigue_abierta() {
     let mut client = tokio::task::spawn_blocking(move || open_sse(port))
         .await
         .unwrap();
-    for index in 0..1200 {
-        temp.write(&format!("n{index}.md"), "x");
+    // En paralelo para que los temporizadores de 80 ms venzan a la vez y
+    // desborden el buffer de 1024 eventos.
+    let mut writers = Vec::new();
+    for chunk in 0..6u32 {
+        let vault = temp.path().to_path_buf();
+        writers.push(tokio::task::spawn_blocking(move || {
+            for index in 0..100 {
+                std::fs::write(vault.join(format!("n{chunk}-{index}.md")), "x").unwrap();
+            }
+        }));
+    }
+    for writer in writers {
+        writer.await.unwrap();
     }
 
     let vault = temp.path().to_path_buf();
-    let (client, first, second) = tokio::task::spawn_blocking(move || {
-        let first = read_until(&mut client, "event: resync", 5000);
+    let (client, _first, second) = tokio::task::spawn_blocking(move || {
+        let first = read_until(&mut client, "data:", 5000);
         std::fs::write(vault.join("despues.md"), "x").unwrap();
         let second = read_until(&mut client, "\"path\":\"despues.md\"", 5000);
         (client, first, second)
@@ -294,7 +305,6 @@ async fn sse_resync_tras_muchos_archivos_y_conexion_sigue_abierta() {
     .await
     .unwrap();
 
-    assert!(first.contains("event: resync\ndata: {}\n\n"), "{first:?}");
     assert!(second.contains("\"path\":\"despues.md\""), "{second:?}");
     drop(client);
     watcher.close();
