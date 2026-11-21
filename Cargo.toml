@@ -19,6 +19,8 @@ toml = { version = "1", features = ["preserve_order"] }
 notify = "8"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
-# Necesarios para implementar el Stream de SSE (broadcast, heartbeat y cancelación).
 futures-core = "0.3"
+# buffer_unordered para el escaneo concurrente; ya está en el árbol vía axum,
+# evita añadir el meta-crate `futures` completo.
+futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }

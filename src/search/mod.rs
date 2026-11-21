@@ -6,6 +6,7 @@ use crate::{
     core::pure::{is_case_sensitive, is_markdown_path, wiki_links, WikiIndex},
     fs::{self, MarkdownEntry},
 };
+use futures_util::{stream, StreamExt};
 use std::sync::Arc;
 
 /// Resultado por archivo: el contrato TS usa `hits` aquí y `results` en el agregado.
@@ -85,23 +86,57 @@ fn split_lines(text: &str) -> Vec<&str> {
     lines
 }
 
-fn equal_at(chars: &[char], at: usize, query: &[char], sensitive: bool) -> bool {
-    if at + query.len() > chars.len() {
-        return false;
+/// Query plegada una sola vez por búsqueda (o por llamada directa).
+fn folded_query(query: &str, sensitive: bool) -> Vec<char> {
+    if sensitive {
+        query.chars().collect()
+    } else {
+        query.chars().map(fold).collect()
     }
-    query.iter().enumerate().all(|(offset, expected)| {
-        let actual = chars[at + offset];
-        if sensitive {
-            actual == *expected
-        } else {
-            fold(actual) == fold(*expected)
-        }
-    })
+}
+
+fn contains_ascii_ci(text: &str, query: &str) -> bool {
+    text.to_ascii_lowercase()
+        .contains(&query.to_ascii_lowercase())
 }
 
 /// Rangos UTF-16 de las coincidencias literales no solapadas de `query` en `line`.
-fn literal_ranges(line: &str, query: &str, sensitive: bool) -> Vec<(usize, usize)> {
-    let query_chars: Vec<char> = query.chars().collect();
+fn literal_ranges(
+    line: &str,
+    query: &str,
+    folded: &[char],
+    sensitive: bool,
+) -> Vec<(usize, usize)> {
+    if folded.is_empty() {
+        return Vec::new();
+    }
+    // ASCII: byte offset == UTF-16 offset, sin char_indices ni Vec<char>.
+    if line.is_ascii() && query.is_ascii() {
+        if sensitive {
+            return line
+                .match_indices(query)
+                .map(|(at, matched)| (at, at + matched.len()))
+                .collect();
+        }
+        let bytes = line.as_bytes();
+        let needle = query.as_bytes();
+        let mut ranges = Vec::new();
+        let mut at = 0;
+        while at + needle.len() <= bytes.len() {
+            if bytes[at..at + needle.len()]
+                .iter()
+                .zip(needle)
+                .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+            {
+                ranges.push((at, at + needle.len()));
+                at += needle.len();
+            } else {
+                at += 1;
+            }
+        }
+        return ranges;
+    }
+
     let chars: Vec<char> = line.chars().collect();
     let mut offsets = Vec::with_capacity(chars.len() + 1);
     let mut cursor = 0;
@@ -113,10 +148,18 @@ fn literal_ranges(line: &str, query: &str, sensitive: bool) -> Vec<(usize, usize
 
     let mut ranges = Vec::new();
     let mut at = 0;
-    while at + query_chars.len() <= chars.len() {
-        if equal_at(&chars, at, &query_chars, sensitive) {
-            ranges.push((offsets[at], offsets[at + query_chars.len()]));
-            at += query_chars.len();
+    while at + folded.len() <= chars.len() {
+        let matches = folded.iter().enumerate().all(|(offset, expected)| {
+            let actual = chars[at + offset];
+            if sensitive {
+                actual == *expected
+            } else {
+                fold(actual) == *expected
+            }
+        });
+        if matches {
+            ranges.push((offsets[at], offsets[at + folded.len()]));
+            at += folded.len();
         } else {
             at += 1;
         }
@@ -179,10 +222,39 @@ pub fn build_hit(
 
 pub fn search_text(path: &str, text: &str, query: &str, per_file: usize) -> FileHits {
     let sensitive = is_case_sensitive(query);
+    let folded = folded_query(query, sensitive);
+    search_text_prepared(path, text, query, per_file, sensitive, &folded)
+}
+
+/// Misma búsqueda, con `sensitive` y la query plegada calculados una sola vez.
+fn search_text_prepared(
+    path: &str,
+    text: &str,
+    query: &str,
+    per_file: usize,
+    sensitive: bool,
+    folded: &[char],
+) -> FileHits {
+    let empty = || FileHits {
+        hits: Vec::new(),
+        truncated: false,
+    };
+    if folded.is_empty() {
+        return empty();
+    }
+    // Prefiltro: sin candidato no hay que dividir el texto en líneas.
+    if sensitive {
+        if !text.contains(query) {
+            return empty();
+        }
+    } else if query.is_ascii() && !contains_ascii_ci(text, query) {
+        return empty();
+    }
+
     let mut hits = Vec::new();
     let mut truncated = false;
     for (index, line) in split_lines(text).iter().enumerate() {
-        let ranges = literal_ranges(line, query, sensitive);
+        let ranges = literal_ranges(line, query, folded, sensitive);
         if ranges.is_empty() {
             continue;
         }
@@ -195,6 +267,13 @@ pub fn search_text(path: &str, text: &str, query: &str, per_file: usize) -> File
     FileHits { hits, truncated }
 }
 
+fn empty_hits() -> FileHits {
+    FileHits {
+        hits: Vec::new(),
+        truncated: false,
+    }
+}
+
 /// Escanea los archivos Markdown visibles aplicando `search_file`.
 pub async fn scan_markdown<F>(
     root: &std::path::Path,
@@ -203,40 +282,71 @@ pub async fn scan_markdown<F>(
     search_file: F,
 ) -> crate::core::pure::SearchResults
 where
-    F: Fn(&str, &str, usize) -> FileHits,
+    F: Fn(&str, &str, usize) -> FileHits + Send + Sync + 'static,
 {
     let all_files = match files {
         Some(files) => files,
         None => fs::unique_paths(&fs::list_markdown_entries(root).await),
     };
+    let ScanOptions {
+        limit,
+        per_file,
+        max_file_bytes,
+        concurrency,
+    } = options;
+    let concurrency = concurrency.max(1);
+    let root = root.to_path_buf();
+    let search_file = Arc::new(search_file);
+
+    let tasks = all_files.into_iter().enumerate().map(|(index, path)| {
+        let root = root.clone();
+        let search_file = Arc::clone(&search_file);
+        async move {
+            let file = root.join(&path);
+            // Una sola ida al pool de blocking por archivo: leer y buscar juntos.
+            let found = tokio::task::spawn_blocking(move || {
+                let bytes = match std::fs::read(&file) {
+                    Ok(bytes) => bytes,
+                    Err(_) => return empty_hits(),
+                };
+                if bytes.len() as u64 > max_file_bytes {
+                    return empty_hits();
+                }
+                // Igual que `read_to_string`: un archivo no UTF-8 se omite.
+                let text = match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(_) => return empty_hits(),
+                };
+                search_file(&path, &text, per_file)
+            })
+            .await
+            .unwrap_or_else(|_| empty_hits());
+            (index, found)
+        }
+    });
+
+    // buffer_unordered termina fuera de orden; reordenar por el índice original.
+    let mut found: Vec<(usize, FileHits)> = stream::iter(tasks)
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+    found.sort_by_key(|(index, _)| *index);
+
     let mut results = Vec::new();
     let mut full = false;
     let mut capped = false;
-    for path in all_files {
-        if full {
-            break;
-        }
-        let file = root.join(&path);
-        let metadata = match tokio::fs::metadata(&file).await {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        if metadata.len() > options.max_file_bytes {
-            continue;
-        }
-        let text = match tokio::fs::read_to_string(&file).await {
-            Ok(text) => text,
-            Err(_) => continue,
-        };
-        let found = search_file(&path, &text, options.per_file);
-        for hit in found.hits {
-            if results.len() >= options.limit {
+    for (_, entry) in found {
+        for hit in entry.hits {
+            if results.len() >= limit {
                 full = true;
                 break;
             }
             results.push(hit);
         }
-        capped |= found.truncated;
+        capped |= entry.truncated;
+        if full {
+            break;
+        }
     }
     crate::core::pure::SearchResults {
         results,
@@ -249,15 +359,17 @@ pub async fn search_markdown(
     query: &str,
     options: ScanOptions,
 ) -> crate::core::pure::SearchResults {
-    let needle = query.trim();
+    let needle = query.trim().to_string();
     if needle.is_empty() {
         return crate::core::pure::SearchResults {
             results: Vec::new(),
             truncated: false,
         };
     }
-    scan_markdown(root, options, None, |path, text, per_file| {
-        search_text(path, text, needle, per_file)
+    let sensitive = is_case_sensitive(&needle);
+    let folded = Arc::new(folded_query(&needle, sensitive));
+    scan_markdown(root, options, None, move |path, text, per_file| {
+        search_text_prepared(path, text, &needle, per_file, sensitive, folded.as_slice())
     })
     .await
 }
@@ -590,8 +702,9 @@ pub async fn search_backlinks(
             .collect::<Vec<_>>(),
     ));
     let files = fs::unique_paths(&entries);
-    scan_markdown(root, options, Some(files), |path, text, per_file| {
-        find_backlinks(text, path, target, &index, per_file)
+    let target = target.to_string();
+    scan_markdown(root, options, Some(files), move |path, text, per_file| {
+        find_backlinks(text, path, &target, index.as_ref(), per_file)
     })
     .await
 }
