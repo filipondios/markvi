@@ -289,6 +289,19 @@ async fn exclusive_create_and_lock_queue() {
 }
 
 #[test]
+fn config_warnings_son_legibles() {
+    let text = "theme = 'neon'\n[keymap.leader]\nf = 'bogus'\n[keymap.view]\nJ = 5\n";
+    let (_, warnings) = config::parse_config(Some(text));
+    let joined = warnings.join(" | ");
+    assert!(joined.contains("\"neon\""), "{joined}");
+    assert!(joined.contains("\"bogus\""), "{joined}");
+    assert!(joined.contains("5"), "{joined}");
+    assert!(!joined.contains("String("), "{joined}");
+    assert!(!joined.contains("Some("), "{joined}");
+    assert!(!joined.contains("Integer("), "{joined}");
+}
+
+#[test]
 fn config_defaults_validation_and_path_precedence() {
     let (config, warnings) = config::parse_config(None);
     assert_eq!(config, pure::default_config());

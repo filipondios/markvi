@@ -122,6 +122,18 @@ fn table(value: &toml::Value) -> Option<&toml::Table> {
     value.as_table()
 }
 
+/// `Display` de `toml::Value` ya da el literal TOML (`"neon"`, `5`).
+fn show(value: &toml::Value) -> String {
+    value.to_string()
+}
+
+fn show_action(action: Option<&str>, raw: &toml::Value) -> String {
+    match action {
+        Some(value) => format!("\"{value}\""),
+        None => show(raw),
+    }
+}
+
 fn warn_unknown(warnings: &mut Vec<String>, prefix: &str, table: &toml::Table, known: &[&str]) {
     for key in table.keys() {
         if !known.contains(&key.as_str()) {
@@ -173,7 +185,8 @@ fn apply_leader(config: &mut Config, value: Option<&toml::Value>, warnings: &mut
         });
         if !valid {
             warnings.push(format!(
-                "keymap.leader.{sequence}: unknown action {action:?}. Use find, grep, recent, alternate, toc, backlinks, close, \"none\" or an ex command such as \":e diary.md\"."
+                "keymap.leader.{sequence}: unknown action {}. Use find, grep, recent, alternate, toc, backlinks, close, \"none\" or an ex command such as \":e diary.md\".",
+                show_action(action, raw)
             ));
             continue;
         }
@@ -226,7 +239,8 @@ fn apply_view_remap(config: &mut Config, value: Option<&toml::Value>, warnings: 
             || target.as_deref() == Some(" ")
         {
             warnings.push(format!(
-                "keymap.view: {from:?} = {raw:?} must map one key to another key."
+                "keymap.view: {from:?} = {} must map one key to another key.",
+                show(raw)
             ));
             continue;
         }
@@ -257,7 +271,8 @@ fn apply_vim(
             || rhs.is_none_or(|rhs| rhs.is_empty() || rhs.encode_utf16().count() > 64)
         {
             warnings.push(format!(
-                "keymap.{name}: {lhs:?} = {raw:?} is not a valid mapping."
+                "keymap.{name}: {lhs:?} = {} is not a valid mapping.",
+                show(raw)
             ));
             continue;
         }
@@ -287,7 +302,8 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
         });
         match key.filter(|_| !letter_or_digit) {
             None => warnings.push(format!(
-                "\"leader\" must be \"space\" or a single symbol such as \",\" (got {value:?})."
+                "\"leader\" must be \"space\" or a single symbol such as \",\" (got {}).",
+                show(value)
             )),
             Some(key) => config.leader = key,
         }
@@ -298,7 +314,8 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
             Some("light") => config.theme = Theme::Light,
             Some("dark") => config.theme = Theme::Dark,
             _ => warnings.push(format!(
-                "\"theme\" must be \"auto\", \"light\" or \"dark\" (got {value:?})."
+                "\"theme\" must be \"auto\", \"light\" or \"dark\" (got {}).",
+                show(value)
             )),
         }
     }
