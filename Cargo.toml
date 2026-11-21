@@ -26,4 +26,5 @@ futures-util = "0.3"
 # ServeFile da Range/HEAD para multimedia; tower aporta `oneshot`.
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs"] }
+indexmap = { version = "2", features = ["serde"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

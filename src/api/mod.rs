@@ -385,11 +385,12 @@ pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Res
     state.guard(&req)?;
     let file = markdown_file(&state, query_param(&req, "path")).await?;
     let content = fs::read_lossy(&file).await?;
+    let etag = hash::etag(&content);
     Ok(text_response(
         200,
         "text/plain; charset=utf-8",
-        content.clone(),
-        Some(hash::etag(&content)),
+        content,
+        Some(etag),
         &[],
     ))
 }
@@ -863,6 +864,23 @@ mod tests {
             assert!(!alias.exists());
             assert!(real.exists());
         }
+    }
+
+    #[test]
+    fn config_json_byte_a_byte() {
+        let raw: toml::Table =
+            toml::from_str("theme = 'dark'\n[keymap.view]\nJ = 'j'\nK = 'k'\n").unwrap();
+        let (config, warnings) = config::validate_config(&raw);
+        let loaded = LoadedConfig {
+            config,
+            warnings,
+            path: "/tmp/markvi-config.toml".to_string(),
+            exists: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&loaded).unwrap(),
+            r#"{"config":{"leader":" ","theme":"dark","font":null,"editor":{"number":true,"relativenumber":false,"scrolloff":0},"leaderBindings":[{"keys":["f"],"action":"find"},{"keys":["/"],"action":"grep"},{"keys":["r"],"action":"recent"},{"keys":["a"],"action":"alternate"},{"keys":["t"],"action":"toc"},{"keys":["b"],"action":"backlinks"},{"keys":["x"],"action":"close"}],"viewRemap":{"J":"j","K":"k"},"vimMappings":[],"render":{"footnotes":true,"alerts":true,"frontmatter":true,"remoteimages":false}},"warnings":[],"path":"/tmp/markvi-config.toml","exists":true}"#
+        );
     }
 
     #[test]

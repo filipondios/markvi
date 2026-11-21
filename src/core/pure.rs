@@ -1,8 +1,8 @@
 //! Núcleo puro del servidor: rutas, wiki y valores por defecto.
 //! Sin Node, Bun ni DOM. Las firmas y el orden de campos siguen a los tests de `src/`.
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
 
 pub const HOSTNAME: &str = "127.0.0.1";
 pub const SSE_HEARTBEAT_MS: u64 = 25_000;
@@ -28,7 +28,10 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 pub fn is_markdown_path(path: &str) -> bool {
-    path.to_lowercase().ends_with(".md")
+    path.len() >= 3
+        && path
+            .get(path.len() - 3..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(".md"))
 }
 
 pub fn is_safe_path(path: &str) -> bool {
@@ -50,7 +53,10 @@ pub fn encode_uri_component(value: &str) -> String {
         if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(byte) {
             out.push(*byte as char);
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
         }
     }
     out
@@ -150,7 +156,7 @@ pub struct Config {
     #[serde(rename = "leaderBindings")]
     pub leader_bindings: Vec<LeaderBinding>,
     #[serde(rename = "viewRemap")]
-    pub view_remap: Map<String, serde_json::Value>,
+    pub view_remap: IndexMap<String, String>,
     #[serde(rename = "vimMappings")]
     pub vim_mappings: Vec<VimMapping>,
     pub render: RenderExtras,
@@ -158,13 +164,13 @@ pub struct Config {
 
 pub fn default_config() -> Config {
     let actions = [
-        "find",
-        "grep",
-        "recent",
-        "alternate",
-        "toc",
-        "backlinks",
-        "close",
+        ("f", "find"),
+        ("/", "grep"),
+        ("r", "recent"),
+        ("a", "alternate"),
+        ("t", "toc"),
+        ("b", "backlinks"),
+        ("x", "close"),
     ];
     Config {
         leader: " ".to_string(),
@@ -177,22 +183,12 @@ pub fn default_config() -> Config {
         },
         leader_bindings: actions
             .iter()
-            .map(|action| LeaderBinding {
-                keys: vec![match *action {
-                    "find" => "f",
-                    "grep" => "/",
-                    "recent" => "r",
-                    "alternate" => "a",
-                    "toc" => "t",
-                    "backlinks" => "b",
-                    "close" => "x",
-                    _ => unreachable!(),
-                }
-                .to_string()],
+            .map(|(key, action)| LeaderBinding {
+                keys: vec![(*key).to_string()],
                 action: (*action).to_string(),
             })
             .collect(),
-        view_remap: Map::new(),
+        view_remap: IndexMap::new(),
         vim_mappings: Vec::new(),
         render: RenderExtras {
             footnotes: true,

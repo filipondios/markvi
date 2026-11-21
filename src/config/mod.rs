@@ -48,7 +48,7 @@ fn is_js_space(c: char) -> bool {
 }
 
 fn parse_key(token: &str) -> Option<String> {
-    if token.to_lowercase() == "space" {
+    if token.eq_ignore_ascii_case("space") {
         return Some(" ".to_string());
     }
     let chars: Vec<char> = token.chars().collect();
@@ -231,9 +231,7 @@ fn apply_view_remap(config: &mut Config, value: Option<&toml::Value>, warnings: 
             continue;
         }
         if source != target {
-            config
-                .view_remap
-                .insert(source.unwrap(), serde_json::json!(target.unwrap()));
+            config.view_remap.insert(source.unwrap(), target.unwrap());
         }
     }
 }
