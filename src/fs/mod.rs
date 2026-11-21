@@ -559,23 +559,113 @@ pub struct Locks {
     map: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
+impl Locks {
+    pub fn pending_locks(&self) -> usize {
+        self.map.try_lock().map(|map| map.len()).unwrap_or(0)
+    }
+}
+
+/// Clave estable: ruta canónica del archivo (o del padre si aún no existe),
+/// para que un symlink y su destino compartan candado.
+pub fn lock_key(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
+        let parent = path.parent().unwrap_or(Path::new("/"));
+        std::fs::canonicalize(parent)
+            .unwrap_or_else(|_| parent.to_path_buf())
+            .join(path.file_name().unwrap_or_default())
+    });
+    resolved.to_string_lossy().into_owned()
+}
+
+/// Lanza la escritura en una tarea independiente: si el handler HTTP se cancela,
+/// la escritura termina y no deja temporales.
+pub fn spawn_write(
+    target: PathBuf,
+    data: String,
+    exclusive: bool,
+) -> tokio::task::JoinHandle<std::io::Result<()>> {
+    tokio::spawn(async move {
+        if exclusive {
+            create_file_exclusive(&target, &data).await
+        } else {
+            write_file_atomic(&target, &data).await
+        }
+    })
+}
+
 pub async fn with_file_lock<F, T>(locks: &Locks, key: &str, task: F) -> T
 where
     F: Future<Output = T>,
 {
+    let key = key.to_string();
     let lock = {
         let mut map = locks.map.lock().await;
-        map.entry(key.to_string())
+        map.entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     };
-    let _guard = lock.lock().await;
-    task.await
+    let guard = lock.lock().await;
+    let output = task.await;
+    drop(guard);
+    // Mapa + variable local: si no hay nadie más esperando, podamos la entrada.
+    if Arc::strong_count(&lock) == 2 {
+        let mut map = locks.map.lock().await;
+        if map
+            .get(&key)
+            .is_some_and(|stored| Arc::ptr_eq(stored, &lock))
+        {
+            map.remove(&key);
+        }
+    }
+    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn locks_se_podan_tras_uso_y_clave_unifica_symlink() {
+        let locks = Locks::default();
+        for _ in 0..5 {
+            with_file_lock(&locks, "a.md", async {}).await;
+        }
+        assert_eq!(locks.pending_locks(), 0);
+
+        #[cfg(unix)]
+        {
+            let dir = std::env::temp_dir().join(format!("markvi-lock-key-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let real = dir.join("real.md");
+            let alias = dir.join("alias.md");
+            std::fs::write(&real, "x").unwrap();
+            std::os::unix::fs::symlink("real.md", &alias).unwrap();
+            assert_eq!(lock_key(&real), lock_key(&alias));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn escritura_en_spawn_completa_si_se_cae_el_cliente() {
+        let dir = std::env::temp_dir().join(format!("markvi-spawn-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("nota.md");
+
+        // El handler se cancela: soltamos el JoinHandle sin esperarlo.
+        drop(spawn_write(target.clone(), "contenido".to_string(), false));
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn fallo_en_el_fallback_no_deja_archivo_parcial() {
