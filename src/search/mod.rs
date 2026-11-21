@@ -3,7 +3,7 @@
 //! no se necesita el crate `regex`. El plegado de-case replica `/i` sin `u` de Bun.
 
 use crate::{
-    core::pure::{is_case_sensitive, is_markdown_path, wiki_links, WikiIndex, WikiRef},
+    core::pure::{is_case_sensitive, is_markdown_path, wiki_links, WikiIndex},
     fs::{self, MarkdownEntry},
 };
 use std::sync::Arc;
@@ -424,15 +424,13 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
             continue;
         }
         let text = mask_inline_code(raw);
-        for (start, full) in wiki_links(&text) {
-            if let Some(ref_) = parse_ref(&full) {
-                links.push(FoundLink {
-                    line: index + 1,
-                    range: (start, start + utf16_len(&full)),
-                    kind: LinkKind::Wiki,
-                    target: ref_.target,
-                });
-            }
+        for (start, full, ref_) in wiki_links(&text) {
+            links.push(FoundLink {
+                line: index + 1,
+                range: (start, start + utf16_len(&full)),
+                kind: LinkKind::Wiki,
+                target: ref_.target,
+            });
         }
         for (range, target) in markdown_links(&text) {
             links.push(FoundLink {
@@ -444,11 +442,6 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
         }
     }
     links
-}
-
-fn parse_ref(full: &str) -> Option<WikiRef> {
-    let inner = full.strip_prefix("[[")?.strip_suffix("]]")?;
-    crate::core::pure::parse_wiki_link(inner)
 }
 
 pub fn posix_normalize(path: &str) -> String {

@@ -251,31 +251,55 @@ pub fn parse_wiki_link(inner: &str) -> Option<WikiRef> {
     }
 }
 
-/// Todas las coincidencias `[[...]]` de un texto, con sus índices UTF-16.
-pub fn wiki_links(text: &str) -> Vec<(usize, String)> {
+/// Todas las coincidencias `[[...]]` de un texto: (offset UTF-16, texto, referencia).
+/// Escanea solo hasta el primer `[`, `]` o `\n` tras `[[`, así que es lineal.
+pub fn wiki_links(text: &str) -> Vec<(usize, String, WikiRef)> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(relative) = text[i + 2..].find("]]") {
-                let end = i + 2 + relative;
-                let inner = &text[i + 2..end];
-                if !inner.contains('\n') && parse_wiki_link(inner).is_some() {
-                    let full = &text[i..end + 2];
-                    out.push((utf16_len(&text[..i]), full.to_string()));
-                    i = end + 2;
-                    continue;
+    let mut utf16 = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && bytes.get(i + 1) == Some(&b'[') {
+            let mut j = i + 2;
+            let mut inner_utf16 = 0usize;
+            let mut close = None;
+            while j < bytes.len() {
+                let c = text[j..].chars().next().expect("índice de byte válido");
+                match c {
+                    ']' => {
+                        if bytes.get(j + 1) == Some(&b']') {
+                            close = Some(j);
+                        }
+                        break;
+                    }
+                    '[' | '\n' => break,
+                    _ => {
+                        inner_utf16 += c.len_utf16();
+                        j += c.len_utf8();
+                    }
                 }
             }
+            if let Some(j) = close {
+                let inner = &text[i + 2..j];
+                if let Some(ref_) = parse_wiki_link(inner) {
+                    out.push((utf16, text[i..j + 2].to_string(), ref_));
+                }
+                utf16 += 4 + inner_utf16;
+                i = j + 2;
+                continue;
+            }
+            // Candidato fallido: saltar directamente al carácter prohibido.
+            if j > i + 2 {
+                utf16 += 2 + inner_utf16;
+                i = j;
+                continue;
+            }
         }
-        i += 1;
+        let c = text[i..].chars().next().expect("índice de byte válido");
+        utf16 += c.len_utf16();
+        i += c.len_utf8();
     }
     out
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.chars().map(|c| c.len_utf16()).sum()
 }
 
 pub fn wiki_label(ref_: &WikiRef) -> String {
