@@ -24,8 +24,19 @@ pub fn resolve_config_path(flag: Option<&Path>, env: &[(String, String)]) -> Pat
     let base = match get("XDG_CONFIG_HOME") {
         Some(home) if Path::new(&home).is_absolute() => PathBuf::from(home),
         _ => {
-            let home = get("HOME").unwrap_or_else(|| ".".to_string());
-            Path::new(&home).join(".config")
+            let home = get("HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    #[allow(deprecated)]
+                    std::env::home_dir()
+                })
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "MARKVI: HOME no definido; no se pudo resolver el directorio personal"
+                    );
+                    std::env::temp_dir()
+                });
+            home.join(".config")
         }
     };
     base.join("markvi").join("config.toml")

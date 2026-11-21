@@ -400,11 +400,10 @@ pub fn unique_paths(entries: &[MarkdownEntry]) -> Vec<String> {
 fn temp_path_for(target: &Path) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut seed = [0u8; 6];
-    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = file.read_exact(&mut seed);
+    if getrandom::fill(&mut seed).is_err() {
+        eprintln!("getrandom falló; usando pid + contador para el archivo temporal");
     }
-    // Si urandom falla, pid + contador evitan nombres predecibles y colisiones.
+    // Si getrandom falla, pid + contador evitan nombres predecibles y colisiones.
     let extra = std::process::id() as u64
         ^ COUNTER
             .fetch_add(1, Ordering::Relaxed)

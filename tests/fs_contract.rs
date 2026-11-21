@@ -357,6 +357,24 @@ fn config_defaults_validation_and_path_precedence() {
     );
 }
 
+fn euid() -> Option<u32> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("Uid:"))?
+        .split_whitespace()
+        .nth(2)?
+        .parse()
+        .ok()
+}
+
+#[test]
+fn config_sin_home_no_cae_en_el_directorio_actual() {
+    let path = config::resolve_config_path(None, &[]);
+    assert!(path.is_absolute(), "ruta relativa: {}", path.display());
+    assert!(path.ends_with("markvi/config.toml"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn config_con_nombre_no_utf8_se_carga() {
@@ -379,6 +397,10 @@ async fn config_con_nombre_no_utf8_se_carga() {
 
 #[tokio::test]
 async fn unreadable_config_is_not_reported_as_missing() {
+    // root puede leer archivos con modo 000.
+    if euid() == Some(0) {
+        return;
+    }
     let temp = Temp::new();
     let missing = config::load_config(&temp.path().join("no.toml")).await;
     assert!(!missing.exists);
