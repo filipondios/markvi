@@ -417,8 +417,59 @@ fn temp_path_for(target: &Path) -> PathBuf {
     parent_of(target).join(format!(".markvi-{hex}.tmp"))
 }
 
-fn code_of(error: &std::io::Error) -> Option<i32> {
-    error.raw_os_error()
+/// Los `ErrorKind` son portables; el código numérico queda como respaldo en
+/// Unix, donde `PermissionDenied` y `Unsupported` no cubren todos los casos.
+fn is_permission(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        matches!(error.raw_os_error(), Some(13 | 1))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+fn hard_link_unsupported(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::Unsupported
+            | std::io::ErrorKind::CrossesDevices
+    ) {
+        return true;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        matches!(error.raw_os_error(), Some(1 | 95 | 38 | 18))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Escritura directa de respaldo: si falla, no deja un archivo a medias.
+async fn direct_create_with_cleanup<Fut>(target: &Path, write: Fut) -> std::io::Result<()>
+where
+    Fut: Future<Output = std::io::Result<()>>,
+{
+    if let Err(error) = write.await {
+        let _ = tokio::fs::remove_file(target).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn create_direct(target: &Path, data: &str) -> std::io::Result<()> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut handle = options.open(target).await?;
+    handle.write_all(data.as_bytes()).await?;
+    handle.sync_all().await
 }
 
 async fn write_temp(target: &Path, data: &str, mode: Option<u32>) -> std::io::Result<PathBuf> {
@@ -469,7 +520,7 @@ pub async fn write_file_atomic(target: &Path, data: &str) -> std::io::Result<()>
     };
     let temp = match write_temp(target, data, mode).await {
         Ok(temp) => temp,
-        Err(error) if mode.is_some() && matches!(code_of(&error), Some(13) | Some(1)) => {
+        Err(error) if mode.is_some() && is_permission(&error) => {
             return tokio::fs::write(target, data).await;
         }
         Err(error) => return Err(error),
@@ -486,17 +537,10 @@ pub async fn create_file_exclusive(target: &Path, data: &str) -> std::io::Result
     let temp = write_temp(target, data, None).await?;
     let result = tokio::fs::hard_link(&temp, target).await;
     if let Err(error) = result {
-        let code = code_of(&error);
-        if matches!(code, Some(1) | Some(95) | Some(38) | Some(18)) {
-            let mut options = tokio::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            let written = async {
-                let mut handle = options.open(target).await?;
-                handle.write_all(data.as_bytes()).await?;
-                handle.sync_all().await
-            }
-            .await;
-            if let Err(fallback) = written {
+        if hard_link_unsupported(&error) {
+            if let Err(fallback) =
+                direct_create_with_cleanup(target, create_direct(target, data)).await
+            {
                 let _ = tokio::fs::remove_file(&temp).await;
                 return Err(fallback);
             }
@@ -527,4 +571,27 @@ where
     };
     let _guard = lock.lock().await;
     task.await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fallo_en_el_fallback_no_deja_archivo_parcial() {
+        let dir = std::env::temp_dir().join(format!("markvi-fs-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("creado.md");
+
+        let result: std::io::Result<()> = direct_create_with_cleanup(&target, async {
+            std::fs::write(&target, "parcial")?;
+            Err(std::io::Error::other("fallo simulado tras escribir"))
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(!target.exists(), "quedó el archivo parcial");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
