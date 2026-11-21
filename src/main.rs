@@ -52,8 +52,7 @@ async fn main() {
     };
 
     let env: Vec<(String, String)> = std::env::vars().collect();
-    let config_path =
-        config::resolve_config_path(args.config.as_ref().and_then(|path| path.to_str()), &env);
+    let config_path = config::resolve_config_path(args.config.as_deref(), &env);
 
     let watcher = FileWatcher::new(&root);
     let state = api::AppState::new(

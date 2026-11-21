@@ -348,13 +348,33 @@ fn config_defaults_validation_and_path_precedence() {
         PathBuf::from("/home/u/.config/markvi/config.toml")
     );
     assert_eq!(
-        config::resolve_config_path(Some("/tmp/x.toml"), &env),
+        config::resolve_config_path(Some(Path::new("/tmp/x.toml")), &env),
         PathBuf::from("/tmp/x.toml")
     );
     assert_eq!(
-        config::resolve_config_path(Some(""), &env),
+        config::resolve_config_path(Some(Path::new("")), &env),
         PathBuf::from("/home/u/.config/markvi/config.toml")
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn config_con_nombre_no_utf8_se_carga() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let temp = Temp::new();
+    let name = std::ffi::OsString::from_vec(b"cfg\xff.toml".to_vec());
+    let path = temp.path().join(name);
+    std::fs::write(&path, "theme = 'dark'\n").unwrap();
+
+    let env: Vec<(String, String)> = Vec::new();
+    assert_eq!(
+        config::resolve_config_path(Some(path.as_path()), &env),
+        path
+    );
+    let loaded = config::load_config(&path).await;
+    assert!(loaded.exists);
+    assert_eq!(loaded.config.theme, pure::Theme::Dark);
 }
 
 #[tokio::test]

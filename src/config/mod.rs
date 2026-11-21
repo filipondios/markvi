@@ -13,13 +13,13 @@ pub struct LoadedConfig {
     pub exists: bool,
 }
 
-pub fn resolve_config_path(flag: Option<&str>, env: &[(String, String)]) -> PathBuf {
+pub fn resolve_config_path(flag: Option<&Path>, env: &[(String, String)]) -> PathBuf {
     let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
-    if let Some(flag) = flag.filter(|value| !value.is_empty()) {
+    if let Some(flag) = flag.filter(|value| !value.as_os_str().is_empty()) {
         return absolute_or_join(flag);
     }
     if let Some(path) = get("MARKVI_CONFIG").filter(|value| !value.is_empty()) {
-        return absolute_or_join(&path);
+        return absolute_or_join(Path::new(&path));
     }
     let base = match get("XDG_CONFIG_HOME") {
         Some(home) if Path::new(&home).is_absolute() => PathBuf::from(home),
@@ -31,8 +31,8 @@ pub fn resolve_config_path(flag: Option<&str>, env: &[(String, String)]) -> Path
     base.join("markvi").join("config.toml")
 }
 
-fn absolute_or_join(path: &str) -> PathBuf {
-    let given = Path::new(path);
+fn absolute_or_join(path: &Path) -> PathBuf {
+    let given = path;
     if given.is_absolute() {
         given.to_path_buf()
     } else {
