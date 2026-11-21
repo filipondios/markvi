@@ -433,7 +433,6 @@
       "output": [
         {
           "line": 1,
-          "raw": "ver [[Nota]] y [texto](otra.md#sec) fin",
           "range": [
             4,
             12
@@ -443,7 +442,6 @@
         },
         {
           "line": 1,
-          "raw": "ver [[Nota]] y [texto](otra.md#sec) fin",
           "range": [
             15,
             35
@@ -462,7 +460,6 @@
       "output": [
         {
           "line": 5,
-          "raw": "[[Real]]",
           "range": [
             0,
             8
@@ -481,7 +478,6 @@
       "output": [
         {
           "line": 1,
-          "raw": "código `[[No]]` y [[Si]]",
           "range": [
             18,
             24
@@ -500,7 +496,6 @@
       "output": [
         {
           "line": 1,
-          "raw": "![img](a.md) y [[Real]]",
           "range": [
             15,
             23
@@ -519,7 +514,6 @@
       "output": [
         {
           "line": 3,
-          "raw": "[[X]]",
           "range": [
             0,
             5

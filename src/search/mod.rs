@@ -265,7 +265,6 @@ pub async fn search_markdown(
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct FoundLink {
     line: usize,
-    raw: String,
     range: (usize, usize),
     kind: LinkKind,
     target: String,
@@ -429,7 +428,6 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
             if let Some(ref_) = parse_ref(&full) {
                 links.push(FoundLink {
                     line: index + 1,
-                    raw: (*raw).to_string(),
                     range: (start, start + utf16_len(&full)),
                     kind: LinkKind::Wiki,
                     target: ref_.target,
@@ -439,7 +437,6 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
         for (range, target) in markdown_links(&text) {
             links.push(FoundLink {
                 line: index + 1,
-                raw: (*raw).to_string(),
                 range,
                 kind: LinkKind::Markdown,
                 target,
@@ -552,7 +549,7 @@ pub fn find_backlinks(
     if from == to || !may_have_links(source) {
         return empty;
     }
-    let mut by_line: std::collections::BTreeMap<usize, (String, Vec<(usize, usize)>)> =
+    let mut by_line: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
         std::collections::BTreeMap::new();
     for link in extract_links(source) {
         let resolved = match link.kind {
@@ -562,18 +559,19 @@ pub fn find_backlinks(
         if resolved.as_deref() != Some(to) {
             continue;
         }
-        by_line
-            .entry(link.line)
-            .and_modify(|entry| entry.1.push(link.range))
-            .or_insert((link.raw, vec![link.range]));
+        by_line.entry(link.line).or_default().push(link.range);
     }
+    let lines = split_lines(source);
     let mut hits = Vec::new();
-    for (line, (raw, ranges)) in by_line {
+    for (line, ranges) in by_line {
         if hits.len() >= per_file {
             empty.truncated = true;
             break;
         }
-        hits.push(build_hit(from, line, &raw, &ranges));
+        let Some(raw) = lines.get(line - 1) else {
+            continue;
+        };
+        hits.push(build_hit(from, line, raw, &ranges));
     }
     empty.hits = hits;
     empty
@@ -609,5 +607,13 @@ mod tests {
         assert_eq!(decode_percent("%41"), "A");
         assert_eq!(decode_percent("%+4"), "%+4");
         assert_eq!(decode_percent("%"), "%");
+    }
+
+    #[test]
+    fn found_link_no_clona_la_linea_completa() {
+        assert!(
+            std::mem::size_of::<super::FoundLink>() <= 64,
+            "FoundLink sigue guardando una copia de la línea por enlace"
+        );
     }
 }

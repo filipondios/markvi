@@ -10,6 +10,8 @@ use std::{
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
+/// Evita que dos fixtures elijan el mismo puerto libre al crearlos en paralelo.
+static PORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct Fixture {
     root: PathBuf,
@@ -19,6 +21,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        let _port_guard = PORT_LOCK.lock().unwrap();
         let root = std::env::temp_dir().join(format!(
             "markvi-api-{}-{}",
             std::process::id(),
