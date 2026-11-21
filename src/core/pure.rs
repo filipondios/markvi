@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
 pub const HOSTNAME: &str = "127.0.0.1";
-pub const SERVER_IDLE_TIMEOUT_S: u64 = 60;
 pub const SSE_HEARTBEAT_MS: u64 = 25_000;
 
 pub const VIEW_PREFIX: &str = "/view/";

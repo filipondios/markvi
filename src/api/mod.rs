@@ -23,9 +23,12 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 const NO_STORE: &str = "no-store";
 const MAX_QUERY: usize = 200;
+const MAX_BODY: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -302,8 +305,14 @@ fn query_param(req: &Request, key: &str) -> Option<String> {
     None
 }
 
+fn too_large() -> ApiError {
+    ApiError::new(413, "Payload too large.")
+}
+
 async fn body_string(req: Request) -> Result<String, ApiError> {
-    let bytes = to_bytes(req.into_body(), usize::MAX).await?;
+    let bytes = to_bytes(req.into_body(), MAX_BODY)
+        .await
+        .map_err(|_| too_large())?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -315,11 +324,11 @@ async fn markdown_file(state: &AppState, path: Option<String>) -> Result<PathBuf
     Ok(file)
 }
 
-async fn body_json(req: Request) -> Value {
-    let bytes = to_bytes(req.into_body(), usize::MAX)
+async fn body_json(req: Request) -> Result<Value, ApiError> {
+    let bytes = to_bytes(req.into_body(), MAX_BODY)
         .await
-        .unwrap_or_default();
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        .map_err(|_| too_large())?;
+    Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
 // ---- handlers -------------------------------------------------------------
@@ -526,7 +535,7 @@ async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiEr
 
 pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     state.guard(&req)?;
-    let payload = body_json(req).await;
+    let payload = body_json(req).await?;
     let from = payload.get("from").and_then(Value::as_str);
     let to = payload.get("to").and_then(Value::as_str);
     let (Some(from), Some(to)) = (from, to) else {
@@ -584,7 +593,7 @@ pub async fn events_get(State(state): State<AppState>, req: Request) -> Result<R
 }
 
 async fn files_dispatch(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    if req.method() == Method::GET {
+    if matches!(req.method(), &Method::GET | &Method::HEAD) {
         raw_get(State(state), req).await
     } else {
         Ok(state.assets.fallback())
@@ -601,6 +610,28 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
     let decoded = percent_decode(encoded)?;
     let file = fs::resolve_file(&state.root, Some(&decoded)).await?;
     let content_type = mime_for(&file);
+    if serves_with_range(&file) {
+        let response = ServeFile::new(&file)
+            .oneshot(req)
+            .await
+            .expect("ServeFile es infalible");
+        let mut response = response.map(Body::new);
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(content_type).expect("MIME válido"),
+        );
+        headers.insert(
+            "content-security-policy",
+            HeaderValue::from_static("sandbox"),
+        );
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+        return Ok(response);
+    }
     let body = tokio::fs::read(&file).await?;
     Ok(bytes_response(
         200,
@@ -642,6 +673,18 @@ fn relative_path(from: &Path, to: &Path) -> PathBuf {
     out
 }
 
+/// Tipos binarios grandes: `ServeFile` aporta Range y HEAD.
+fn serves_with_range(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str(),
+        "webp" | "avif" | "mp4" | "webm" | "mp3" | "ogg" | "pdf"
+    )
+}
+
 fn mime_for(path: &Path) -> &'static str {
     match path
         .extension()
@@ -659,6 +702,16 @@ fn mime_for(path: &Path) -> &'static str {
         "js" => "text/javascript",
         "woff2" => "font/woff2",
         "html" => "text/html",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "txt" => "text/plain",
+        "json" => "application/json",
         _ => "application/octet-stream",
     }
 }
@@ -809,6 +862,25 @@ mod tests {
                 .is_symlink());
             assert!(!alias.exists());
             assert!(real.exists());
+        }
+    }
+
+    #[test]
+    fn mime_por_extension() {
+        let casos = [
+            ("a.webp", "image/webp"),
+            ("a.avif", "image/avif"),
+            ("a.ico", "image/x-icon"),
+            ("a.pdf", "application/pdf"),
+            ("a.mp4", "video/mp4"),
+            ("a.webm", "video/webm"),
+            ("a.mp3", "audio/mpeg"),
+            ("a.ogg", "audio/ogg"),
+            ("a.txt", "text/plain"),
+            ("a.json", "application/json"),
+        ];
+        for (name, expected) in casos {
+            assert_eq!(mime_for(Path::new(name)), expected, "{name}");
         }
     }
 

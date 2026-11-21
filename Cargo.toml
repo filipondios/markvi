@@ -23,4 +23,7 @@ futures-core = "0.3"
 # buffer_unordered para el escaneo concurrente; ya está en el árbol vía axum,
 # evita añadir el meta-crate `futures` completo.
 futures-util = "0.3"
+# ServeFile da Range/HEAD para multimedia; tower aporta `oneshot`.
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

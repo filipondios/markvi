@@ -82,16 +82,18 @@ impl Fixture {
 
     /// Devuelve (cabeceras, cuerpo) sin pasar el cuerpo por UTF-8.
     fn request_bytes(&self, path: &str) -> (String, Vec<u8>) {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        write!(
-            stream,
+        self.request_response(format!(
             "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
             self.port
-        )
-        .unwrap();
+        ))
+    }
+
+    fn request_response(&self, request: impl AsRef<str>) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(stream, "{}", request.as_ref()).unwrap();
         let mut answer = Vec::new();
         let _ = stream.read_to_end(&mut answer);
         let split = answer
@@ -212,6 +214,65 @@ fn files_sirve_binarios_byte_a_byte_y_markdown_sigue_intacto() {
 
     let (_, md) = fixture.request_bytes("/files/index.md");
     assert_eq!(md, b"# indice\n");
+}
+
+#[test]
+fn cuerpo_mayor_que_16mib_da_413() {
+    let fixture = Fixture::new();
+    let body = "x".repeat(16 * 1024 * 1024 + 1);
+    let answer = fixture.request(format!(
+        "PUT /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        fixture.port,
+        body.len()
+    ));
+    assert!(answer.contains("413"), "{answer:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("index.md")).unwrap(),
+        "# indice\n"
+    );
+}
+
+#[test]
+fn multimedia_sirve_range_y_head_con_cabeceras_de_seguridad() {
+    let fixture = Fixture::new();
+    let bytes: Vec<u8> = (0..100).collect();
+    fs::write(fixture.root.join("video.mp4"), &bytes).unwrap();
+
+    let request = format!(
+        "GET /files/video.mp4 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nRange: bytes=0-9\r\nConnection: close\r\n\r\n",
+        fixture.port
+    );
+    let (headers, body) = fixture.request_response(request);
+    assert!(headers.contains("206"), "{headers:?}");
+    assert!(
+        headers.to_lowercase().contains("content-type: video/mp4"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("content-security-policy: sandbox"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("x-content-type-options: nosniff"),
+        "{headers:?}"
+    );
+    assert_eq!(body, bytes[..10]);
+
+    let request = format!(
+        "HEAD /files/video.mp4 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        fixture.port
+    );
+    let (headers, body) = fixture.request_response(request);
+    assert!(headers.contains("200 OK"), "{headers:?}");
+    assert!(
+        headers.to_lowercase().contains("content-type: video/mp4"),
+        "{headers:?}"
+    );
+    assert!(body.is_empty());
 }
 
 #[test]
