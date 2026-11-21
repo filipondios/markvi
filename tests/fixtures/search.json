@@ -506,6 +506,60 @@
       ]
     },
     {
+      "id": "extract-inline-triple-backticks",
+      "fn": "extractLinks",
+      "args": [
+        "```inline``` texto [[t]]"
+      ],
+      "output": [
+        {
+          "line": 1,
+          "range": [
+            19,
+            24
+          ],
+          "kind": "wiki",
+          "target": "t"
+        }
+      ]
+    },
+    {
+      "id": "extract-mixed-fence-does-not-open",
+      "fn": "extractLinks",
+      "args": [
+        "`~`~ x\n[[t]]"
+      ],
+      "output": [
+        {
+          "line": 2,
+          "range": [
+            0,
+            5
+          ],
+          "kind": "wiki",
+          "target": "t"
+        }
+      ]
+    },
+    {
+      "id": "extract-real-fence-hides-links",
+      "fn": "extractLinks",
+      "args": [
+        "```\n[[hidden]]\n```\n[[visible]]"
+      ],
+      "output": [
+        {
+          "line": 4,
+          "range": [
+            0,
+            11
+          ],
+          "kind": "wiki",
+          "target": "visible"
+        }
+      ]
+    },
+    {
       "id": "extract-crlf",
       "fn": "extractLinks",
       "args": [

@@ -396,14 +396,21 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
     let mut fence: Option<(char, usize)> = None;
     for (index, raw) in split_lines(source).iter().enumerate() {
         let trimmed = raw.trim_start_matches(' ');
-        let marker = if trimmed.len() <= raw.len() && raw.len() - trimmed.len() <= 3 {
-            let ticks = trimmed
-                .chars()
-                .take_while(|c| *c == '`' || *c == '~')
-                .count();
-            let symbol = trimmed.chars().next();
-            if (symbol == Some('`') || symbol == Some('~')) && ticks >= 3 {
-                Some((symbol.unwrap(), ticks, trimmed[ticks..].trim()))
+        let symbol = trimmed.chars().next();
+        let marker = if trimmed.len() <= raw.len()
+            && raw.len() - trimmed.len() <= 3
+            && (symbol == Some('`') || symbol == Some('~'))
+        {
+            let ticks = trimmed.chars().take_while(|c| Some(*c) == symbol).count();
+            if ticks >= 3 {
+                let rest = trimmed[ticks..].trim();
+                // CommonMark: el info-string de una valla de backticks no puede
+                // contener backticks; esa línea es texto normal.
+                if symbol == Some('`') && rest.contains('`') {
+                    None
+                } else {
+                    Some((symbol.unwrap(), ticks, rest))
+                }
             } else {
                 None
             }
