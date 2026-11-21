@@ -1,15 +1,17 @@
-<p align="center"><img src="./public/img/logo-full.png" alt="opios" width="150"></p>
+<p align="center"><img src="./frontend/img/logo-full.png" alt="opios" width="150"></p>
 <p align="center"><em>A local Markdown viewer and editor for your browser with Vim-style keybindings.</em></p>
-<p align="center"><img src="./public/img/demo.gif" alt="MarkVi in action"></p>
+<p align="center"><img src="./frontend/img/demo.gif" alt="MarkVi in action"></p>
 
 ## Usage
 
 ```
-bun install
-bun run server.ts ./example        # http://127.0.0.1:3000
-bun run server.ts ~/notes -p 4000  # another directory and port
-bun run server.ts ~/notes -c my.toml  # another configuration file
+bun run build                             # builds the Rust release binary (see Build below)
+target/release/markvi ./example           # http://127.0.0.1:3000
+target/release/markvi ~/notes -p 4000     # another directory and port
+target/release/markvi ~/notes -c my.toml  # another configuration file
 ```
+
+For a quick start from a source checkout, `bun run start` builds and runs the Rust server on `./example` (extra arguments go after `--`, e.g. `bun run start -- -p 4000`). Bun is needed only to build and test the frontend, never to run the published binary.
 
 The app only listens on `127.0.0.1`. The directory is scanned for `.md` files, ignoring hidden files and other irrelevant entries.
 
@@ -134,13 +136,13 @@ jk = "<Esc>"
 
 Invalid values never stop the app: they are ignored, the first problem is shown in the status bar and all of them are printed to the browser console and the server log. A shortcut cannot start with another bound sequence (`ff` while `f` is bound): unbind `f` first. In the editor's Normal mode the leader key replaces its Vim meaning (with `,` you lose "repeat `f` / `t` backwards").
 
-A guided tour of the app lives in the [`example` directory](./example): run `bun run server.ts ./example` and open `index.md`.
+A guided tour of the app lives in the [`example` directory](./example): run `target/release/markvi ./example` (or `bun run start`) and open `index.md`.
 
 ## Unsaved changes and symbolic links
 
 **Draft recovery.** While you edit, MarkVi keeps a backup of unsaved text in the browser's `localStorage` (written about half a second after you stop typing, and immediately when the page is hidden or closed). If the browser closes, crashes or reloads, the draft comes back the next time you open that file and a message says so; `:w` saves it and `:q!` discards it. If the file changed on disk in the meantime, the draft is restored as a conflict (`Reload` / `Overwrite`) instead of overwriting anything. Backups are removed when you save or discard, expire after 30 days, and files over about 1 M characters are not backed up (you get a warning). A draft that belongs to another window that is still open is never taken over.
 
-**Symbolic links.** A link whose real target is inside the served folder (and not hidden) behaves like the file or folder it points to: it is listed, searched, linked with `[[wiki]]` and live-reloaded. Links that leave the folder, are broken, loop, or point to something that is not a `.md` file are ignored and refused, as before. `:mv` and `:rm` on a link act on the link itself, never on its target.
+**Symbolic links.** A link whose real target is inside the served folder (and not hidden) behaves like the file or folder it points to: it is listed, searched, linked with `[[wiki]]` and live-reloaded. Links that leave the folder, are broken, loop, or point to something that is not a `.md` file are ignored and refused. `:mv` and `:rm` on a link act on the link itself, never on its target.
 
 ## Rendering Extras
 
@@ -167,15 +169,16 @@ Requests that modify files (`POST`, `PUT`, `DELETE`) are rejected when their `Or
 ## Build as a Command-Line Tool
 
 ```
-bun run build # generates dist/markvi
-install -m 755 dist/markvi ~/.local/bin/markvi
-markvi ~/notes # replace notes with your directory
+bun install                  # development dependencies (frontend build)
+bun run build                # builds the frontend, then the Rust release binary
+install -m 755 target/release/markvi ~/.local/bin/markvi
+markvi ~/notes               # replace notes with your directory
 ```
 
-The binary bundles the frontend and does not require `bun` to be installed at runtime.
+The binary embeds the compiled frontend, so it does not need `bun`, `node`, or any asset directory at runtime and can run from any working directory. `bun run frontend:build` alone regenerates `frontend/dist/`; `build` always runs it before Cargo so the embedded assets match the sources. `bun run test` runs the Rust and frontend tests; `bun run test:e2e` runs the browser suite against Rust; `bun run demo` regenerates screenshots using the Rust server.
 
 ## Licenses
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for the full license text.
 
-The interface uses **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors, authored by Cody Collier), self-hosted in `public/fonts/` under the [SIL Open Font License 1.1](public/fonts/OFL,txt). The full license text is available in `public/fonts/OFL.txt`, and the authors are listed in `public/fonts/AUTHORS.txt`.
+The interface uses **Obel Mono 1.003** (© 2026 The Obel Mono Project Authors, authored by Cody Collier), self-hosted in `frontend/fonts/` under the [SIL Open Font License 1.1](frontend/fonts/OFL.txt). The full license text is available in `frontend/fonts/OFL.txt`, and the authors are listed in `frontend/fonts/AUTHORS.txt`.

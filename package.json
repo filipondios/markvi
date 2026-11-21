@@ -1,27 +1,24 @@
 {
   "name": "markvi",
-  "module": "server.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run server.ts",
-    "build": "bun build --compile ./server.ts --outfile dist/markvi",
-    "test": "bun test",
+    "start": "bun run frontend:build && cargo run --quiet --bin markvi -- ./example",
+    "frontend:build": "bun run scripts/build-frontend.ts",
+    "build": "bun run frontend:build && cargo build --release",
+    "test": "cargo test && bun test frontend/",
+    "test:e2e": "bun run frontend:build && cargo build --bin markvi && node tests/e2e/browser_e2e.mjs",
     "typecheck": "bun check",
-    "demo": "bun run scripts/demo.ts"
+    "demo": "bun run frontend:build && cargo build --bin markvi && bun run scripts/demo.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "playwright": "^1.63.0"
   },
-  "peerDependencies": {
-    "typescript": "^7"
-  },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language": "^6.13.1",
-    "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.7.6",
     "@codemirror/theme-one-dark": "^6.1.3",
     "@codemirror/view": "^6.43.15",

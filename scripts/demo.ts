@@ -17,11 +17,13 @@
  */
 
 import { cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SERVER_BIN = join(ROOT_DIR, "target/debug/markvi");
 
 const GIF_CONFIG = {
   width: 1000,
@@ -147,10 +149,14 @@ type Browser = Awaited<ReturnType<PlaywrightModule["chromium"]["launch"]>>;
 type Page = Awaited<ReturnType<Browser["newPage"]>>;
 
 async function findFreePort(): Promise<number> {
-  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
+  return new Promise((resolvePort, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const port = (probe.address() as { port: number }).port;
+      probe.close(() => resolvePort(port));
+    });
+  });
 }
 
 async function withApp<T>(run: (baseUrl: string) => Promise<T>): Promise<T> {
@@ -158,9 +164,12 @@ async function withApp<T>(run: (baseUrl: string) => Promise<T>): Promise<T> {
   const vaultDir = join(workDir, "notes");
   await cp(join(ROOT_DIR, "example"), vaultDir, { recursive: true });
 
+  if (!(await stat(SERVER_BIN).catch(() => null))?.isFile()) {
+    fail(`falta ${SERVER_BIN}. Ejecuta bun run build antes de la demo.`);
+  }
   const port = await findFreePort();
   const server = Bun.spawn(
-    ["bun", "run", "server.ts", vaultDir, "--port", String(port), "--config", join(workDir, "none.toml")],
+    [SERVER_BIN, vaultDir, "--port", String(port), "--config", join(workDir, "none.toml")],
     { cwd: ROOT_DIR, stdout: "ignore", stderr: "inherit" },
   );
 
@@ -178,6 +187,8 @@ async function withApp<T>(run: (baseUrl: string) => Promise<T>): Promise<T> {
     return await run(baseUrl);
   } finally {
     server.kill();
+    await Promise.race([server.exited, new Promise((done) => setTimeout(done, 2000))]);
+    if (server.exitCode === null) server.kill(9);
     await rm(workDir, { recursive: true, force: true });
   }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "markvi-server"
+version = "0.1.0"
+edition = "2021"
+description = "A local Markdown viewer and editor with Vim-style keybindings"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "markvi"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "1", features = ["preserve_order"] }
+notify = "8"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+# Necesarios para implementar el Stream de SSE (broadcast, heartbeat y cancelación).
+futures-core = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
