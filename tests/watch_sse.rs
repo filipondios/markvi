@@ -66,6 +66,34 @@ async fn collect(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn watcher_emite_la_segunda_escritura_separada_100ms() {
+    let temp = Temp::new();
+    temp.write("dos.md", "v0");
+    let mut watcher = FileWatcher::new(temp.path());
+    let mut events = watcher.subscribe();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let _ = collect(&mut events, 50).await;
+
+    temp.write("dos.md", "v1");
+    // La segunda escritura cae ~100 ms después de la primera: dentro del
+    // debounce de 80 ms por ruta, pero también dentro del viejo dedupe de 150 ms.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    temp.write("dos.md", "v2");
+
+    let emitted = collect(&mut events, 500).await;
+    let changes = emitted
+        .iter()
+        .filter(|event| event.path == "dos.md" && event.kind == DiskEventKind::Change)
+        .count();
+    assert!(
+        changes >= 2,
+        "se descartó una de las escrituras: {emitted:?}"
+    );
+    assert!(changes <= 3, "ráfaga de duplicados: {emitted:?}");
+    watcher.close();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn watcher_create_modify_rename_remove_and_burst() {
     let temp = Temp::new();
     temp.write("inicial.md", "inicial");
@@ -80,11 +108,9 @@ async fn watcher_create_modify_rename_remove_and_burst() {
         burst.contains(&event("nuevo.md", DiskEventKind::Change)),
         "{burst:?}"
     );
-    assert_eq!(
-        burst.iter().filter(|e| e.path == "nuevo.md").count(),
-        1,
-        "debounce: {burst:?}"
-    );
+    // `fs::write` no es atómico: crear y cerrar pueden llegar como dos eventos.
+    let changes = burst.iter().filter(|e| e.path == "nuevo.md").count();
+    assert!((1..=3).contains(&changes), "ráfaga inesperada: {burst:?}");
 
     temp.write("nuevo.md", "ab");
     tokio::time::sleep(Duration::from_millis(250)).await;

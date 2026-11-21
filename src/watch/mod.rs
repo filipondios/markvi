@@ -91,24 +91,12 @@ impl FileWatcher {
             let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
             let mut timers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
-            let mut last_emitted: HashMap<String, (DiskEventKind, std::time::Instant)> =
-                HashMap::new();
-            let emit =
-                |event: DiskEvent,
-                 tx: &broadcast::Sender<DiskEvent>,
-                 last: &mut HashMap<String, (DiskEventKind, std::time::Instant)>| {
-                    if flags.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    // Coalesce eventos idénticos muy seguidos (create + close_write).
-                    if let Some((kind, at)) = last.get(&event.path) {
-                        if *kind == event.kind && at.elapsed() < Duration::from_millis(150) {
-                            return;
-                        }
-                    }
-                    last.insert(event.path.clone(), (event.kind, std::time::Instant::now()));
-                    let _ = tx.send(event);
-                };
+            let emit = |event: DiskEvent, tx: &broadcast::Sender<DiskEvent>| {
+                if flags.load(Ordering::Relaxed) {
+                    return;
+                }
+                let _ = tx.send(event);
+            };
 
             loop {
                 let input = tokio::select! {
@@ -151,28 +139,12 @@ impl FileWatcher {
                             .await
                             .is_ok_and(|info| info.file_type().is_symlink())
                         {
-                            reconcile(
-                                &root,
-                                &mut known,
-                                &mut aliases,
-                                &tx,
-                                &emit,
-                                &mut last_emitted,
-                            )
-                            .await;
+                            reconcile(&root, &mut known, &mut aliases, &tx, &emit).await;
                         }
                         let info = tokio::fs::metadata(&abs).await.ok();
                         let kind = match info {
                             Some(info) if info.is_dir() => {
-                                reconcile(
-                                    &root,
-                                    &mut known,
-                                    &mut aliases,
-                                    &tx,
-                                    &emit,
-                                    &mut last_emitted,
-                                )
-                                .await;
+                                reconcile(&root, &mut known, &mut aliases, &tx, &emit).await;
                                 continue;
                             }
                             Some(info) if info.is_file() => DiskEventKind::Change,
@@ -188,12 +160,11 @@ impl FileWatcher {
                                 path: path.clone(),
                             },
                             &tx,
-                            &mut last_emitted,
                         );
                         if let Some(alias_list) = aliases.get(&path) {
                             for alias in alias_list.clone() {
                                 if known.contains(&alias) {
-                                    emit(DiskEvent { kind, path: alias }, &tx, &mut last_emitted);
+                                    emit(DiskEvent { kind, path: alias }, &tx);
                                 }
                             }
                         }
@@ -210,15 +181,7 @@ impl FileWatcher {
                         if info.is_none() && !had_children {
                             continue;
                         }
-                        reconcile(
-                            &root,
-                            &mut known,
-                            &mut aliases,
-                            &tx,
-                            &emit,
-                            &mut last_emitted,
-                        )
-                        .await;
+                        reconcile(&root, &mut known, &mut aliases, &tx, &emit).await;
                     }
                 }
             }
@@ -307,13 +270,8 @@ async fn reconcile<F>(
     aliases: &mut HashMap<String, Vec<String>>,
     tx: &broadcast::Sender<DiskEvent>,
     emit: &F,
-    last: &mut HashMap<String, (DiskEventKind, std::time::Instant)>,
 ) where
-    F: Fn(
-        DiskEvent,
-        &broadcast::Sender<DiskEvent>,
-        &mut HashMap<String, (DiskEventKind, std::time::Instant)>,
-    ),
+    F: Fn(DiskEvent, &broadcast::Sender<DiskEvent>),
 {
     let entries = fs::list_markdown_entries(root).await;
     index_aliases(aliases, &entries);
@@ -327,7 +285,6 @@ async fn reconcile<F>(
                 path: path.clone(),
             },
             tx,
-            last,
         );
     }
     let mut added: Vec<String> = current.difference(known).cloned().collect();
@@ -339,7 +296,6 @@ async fn reconcile<F>(
                 path: path.clone(),
             },
             tx,
-            last,
         );
     }
     *known = current;
