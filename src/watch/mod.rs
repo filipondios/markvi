@@ -11,7 +11,7 @@ use std::{
     collections::{HashMap, HashSet},
     convert::Infallible,
     future::Future,
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -65,14 +65,16 @@ impl FileWatcher {
         let closed = Arc::new(AtomicBool::new(false));
 
         let watcher_tx = event_tx.clone();
-        let mut watcher = notify::recommended_watcher(move |result| {
+        let watcher = match notify::recommended_watcher(move |result| {
             let _ = watcher_tx.send(Input::Notify(result));
-        })
-        .expect("recommended watcher");
-        if let Err(error) = watcher.watch(root, RecursiveMode::Recursive) {
-            eprintln!("Could not watch the directory: {error}");
-        }
-        let watcher = Arc::new(Mutex::new(Some(watcher)));
+        }) {
+            Ok(watcher) => Arc::new(Mutex::new(Some(watcher))),
+            Err(error) => {
+                // Sin live-reload, pero el servidor sigue arrancando.
+                eprintln!("Could not watch the directory: {error}");
+                Arc::new(Mutex::new(None))
+            }
+        };
 
         let init_root = root.to_path_buf();
         let init_tx = hub_tx.clone();
@@ -86,10 +88,12 @@ impl FileWatcher {
         let root = root.to_path_buf();
         let tx = hub_tx.clone();
         let flags = closed.clone();
+        let loop_watcher = watcher.clone();
         tokio::spawn(async move {
             let mut known: HashSet<String> = HashSet::new();
             let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
             let mut timers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+            let mut watched: HashSet<PathBuf> = HashSet::new();
 
             let emit = |event: DiskEvent, tx: &broadcast::Sender<DiskEvent>| {
                 if flags.load(Ordering::Relaxed) {
@@ -109,6 +113,7 @@ impl FileWatcher {
                             known.insert(entry.path.clone());
                         }
                         index_aliases(&mut aliases, &entries);
+                        watch_dirs(&loop_watcher, &root, &mut watched).await;
                     }
                     Input::Notify(result) => {
                         let event = match result {
@@ -139,12 +144,30 @@ impl FileWatcher {
                             .await
                             .is_ok_and(|info| info.file_type().is_symlink())
                         {
-                            reconcile(&root, &mut known, &mut aliases, &tx, &emit).await;
+                            reconcile(
+                                &root,
+                                &mut known,
+                                &mut aliases,
+                                &tx,
+                                &emit,
+                                &loop_watcher,
+                                &mut watched,
+                            )
+                            .await;
                         }
                         let info = tokio::fs::metadata(&abs).await.ok();
                         let kind = match info {
                             Some(info) if info.is_dir() => {
-                                reconcile(&root, &mut known, &mut aliases, &tx, &emit).await;
+                                reconcile(
+                                    &root,
+                                    &mut known,
+                                    &mut aliases,
+                                    &tx,
+                                    &emit,
+                                    &loop_watcher,
+                                    &mut watched,
+                                )
+                                .await;
                                 continue;
                             }
                             Some(info) if info.is_file() => DiskEventKind::Change,
@@ -181,7 +204,16 @@ impl FileWatcher {
                         if info.is_none() && !had_children {
                             continue;
                         }
-                        reconcile(&root, &mut known, &mut aliases, &tx, &emit).await;
+                        reconcile(
+                            &root,
+                            &mut known,
+                            &mut aliases,
+                            &tx,
+                            &emit,
+                            &loop_watcher,
+                            &mut watched,
+                        )
+                        .await;
                     }
                 }
             }
@@ -264,15 +296,51 @@ fn schedule(
     timers.insert(key, handle);
 }
 
+/// Vigila solo los directorios visibles, uno a uno (sin `Recursive` sobre el root).
+async fn watch_dirs(
+    watcher: &Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    root: &Path,
+    watched: &mut HashSet<PathBuf>,
+) {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        if !watched.insert(dir.clone()) {
+            continue;
+        }
+        {
+            let mut guard = watcher.lock().await;
+            if let Some(watcher) = guard.as_mut() {
+                if let Err(error) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                    eprintln!("Could not watch the directory: {error}");
+                }
+            }
+        }
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if !fs_ignored(&entry.file_name().to_string_lossy())
+                && entry.file_type().await.is_ok_and(|kind| kind.is_dir())
+            {
+                pending.push(entry.path());
+            }
+        }
+    }
+}
+
 async fn reconcile<F>(
     root: &Path,
     known: &mut HashSet<String>,
     aliases: &mut HashMap<String, Vec<String>>,
     tx: &broadcast::Sender<DiskEvent>,
     emit: &F,
+    watcher: &Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    watched: &mut HashSet<PathBuf>,
 ) where
     F: Fn(DiskEvent, &broadcast::Sender<DiskEvent>),
 {
+    watch_dirs(watcher, root, watched).await;
     let entries = fs::list_markdown_entries(root).await;
     index_aliases(aliases, &entries);
     let current: HashSet<String> = entries.iter().map(|entry| entry.path.clone()).collect();
