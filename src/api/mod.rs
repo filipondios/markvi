@@ -91,6 +91,22 @@ fn empty_response(status: u16, etag: Option<String>) -> Response {
     builder.body(Body::empty()).expect("valid response")
 }
 
+fn bytes_response(
+    status: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    extra: &[(&str, &str)],
+) -> Response {
+    let mut builder = Response::builder()
+        .status(StatusCode::from_u16(status).unwrap())
+        .header("cache-control", NO_STORE)
+        .header("content-type", content_type);
+    for (name, value) in extra {
+        builder = builder.header(*name, *value);
+    }
+    builder.body(Body::from(body)).expect("valid response")
+}
+
 fn text_response(
     status: u16,
     content_type: &str,
@@ -546,12 +562,11 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
     let decoded = percent_decode(encoded)?;
     let file = fs::resolve_file(&state.root, Some(&decoded)).await?;
     let content_type = mime_for(&file);
-    let body = String::from_utf8_lossy(&tokio::fs::read(&file).await?).into_owned();
-    Ok(text_response(
+    let body = tokio::fs::read(&file).await?;
+    Ok(bytes_response(
         200,
         content_type,
         body,
-        None,
         &[
             ("content-security-policy", "sandbox"),
             ("x-content-type-options", "nosniff"),

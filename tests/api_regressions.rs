@@ -76,6 +76,30 @@ impl Fixture {
         let _ = stream.read_to_string(&mut answer);
         answer
     }
+
+    /// Devuelve (cabeceras, cuerpo) sin pasar el cuerpo por UTF-8.
+    fn request_bytes(&self, path: &str) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            self.port
+        )
+        .unwrap();
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+        let split = answer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("respuesta HTTP sin fin de cabeceras");
+        (
+            String::from_utf8_lossy(&answer[..split]).into_owned(),
+            answer[split + 4..].to_vec(),
+        )
+    }
 }
 
 impl Drop for Fixture {
@@ -84,6 +108,36 @@ impl Drop for Fixture {
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+fn files_sirve_binarios_byte_a_byte_y_markdown_sigue_intacto() {
+    let fixture = Fixture::new();
+    let png = [0x89, 0xFF, 0x00, 0x02, 0xC3, 0x28];
+    fs::write(fixture.root.join("blob.png"), png).unwrap();
+
+    let (headers, body) = fixture.request_bytes("/files/blob.png");
+    assert!(headers.contains("200 OK"), "{headers:?}");
+    assert_eq!(body, png, "el PNG salió corrupto");
+    assert!(
+        headers.to_lowercase().contains("content-type: image/png"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("content-security-policy: sandbox"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("x-content-type-options: nosniff"),
+        "{headers:?}"
+    );
+
+    let (_, md) = fixture.request_bytes("/files/index.md");
+    assert_eq!(md, b"# indice\n");
 }
 
 #[test]
