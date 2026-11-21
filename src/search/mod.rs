@@ -472,20 +472,37 @@ pub fn posix_normalize(path: &str) -> String {
     stack.join("/")
 }
 
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn decode_percent(path: &str) -> String {
     let bytes = path.as_bytes();
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&path[index + 1..index + 3], 16) {
+        let decoded = if bytes[index] == b'%' && index + 2 < bytes.len() {
+            hex_val(bytes[index + 1])
+                .zip(hex_val(bytes[index + 2]))
+                .map(|(high, low)| (high << 4) | low)
+        } else {
+            None
+        };
+        match decoded {
+            Some(byte) => {
                 out.push(byte);
                 index += 3;
-                continue;
+            }
+            None => {
+                out.push(bytes[index]);
+                index += 1;
             }
         }
-        out.push(bytes[index]);
-        index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -579,4 +596,18 @@ pub async fn search_backlinks(
         find_backlinks(text, path, target, &index, per_file)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_percent;
+
+    #[test]
+    fn decode_percent_no_panica_con_multibyte_y_deja_literal_invalido() {
+        // %aé corta un carácter UTF-8: antes hacía panic en el slice &str.
+        assert_eq!(decode_percent("%aé.md"), "%aé.md");
+        assert_eq!(decode_percent("%41"), "A");
+        assert_eq!(decode_percent("%+4"), "%+4");
+        assert_eq!(decode_percent("%"), "%");
+    }
 }

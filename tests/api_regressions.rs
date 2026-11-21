@@ -87,6 +87,20 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn backlinks_responde_200_con_enlace_porcentaje_multibyte() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("source.md"), "[x](%aé.md)\n").unwrap();
+    let answer = fixture.request(
+        "GET /api/backlinks?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(
+        answer.contains("200 OK"),
+        "respuesta inesperada: {answer:?}"
+    );
+}
+
+#[test]
 fn rejects_delete_of_non_markdown_files() {
     let fixture = Fixture::new();
     let answer = fixture.request(
