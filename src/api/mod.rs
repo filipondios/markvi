@@ -114,6 +114,30 @@ fn text_response(
     builder.body(Body::from(body)).expect("valid response")
 }
 
+/// Comparación débil (RFC 9110 §13.1.2) de `If-None-Match` con un etag; admite lista y `*`.
+fn etag_matches(header: &str, etag: &str) -> bool {
+    let strip = |tag: &str| tag.trim().trim_start_matches("W/").to_string();
+    let wanted = strip(etag);
+    header
+        .split(',')
+        .any(|candidate| candidate.trim() == "*" || strip(candidate) == wanted)
+}
+
+fn not_modified(etag: &str, cache_control: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_MODIFIED)
+        .header("cache-control", cache_control)
+        .header("etag", etag)
+        .body(Body::empty())
+        .expect("valid response")
+}
+
+fn if_none_match(req: &Request) -> Option<&str> {
+    req.headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+}
+
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/frontend_assets.rs"));
 }
@@ -162,6 +186,26 @@ impl StaticAssets {
             fallback_status: manifest["fallback"]["status"].as_u64().unwrap() as u16,
             fallback_body: manifest["fallback"]["body"].as_str().unwrap().to_string(),
         }
+    }
+
+    /// `index_response` o 304 si `If-None-Match` coincide con su etag.
+    fn index_conditional(&self, if_none_match: Option<&str>) -> Response {
+        if let (Some(etag), Some(header)) = (&self.index_etag, if_none_match) {
+            if etag_matches(header, etag) {
+                return not_modified(etag, "no-cache");
+            }
+        }
+        self.index_response()
+    }
+
+    fn asset_conditional(&self, path: &str, if_none_match: Option<&str>) -> Option<Response> {
+        let (_, _, cache_control, etag) = self.files.get(path)?;
+        if let (Some(etag), Some(header)) = (etag, if_none_match) {
+            if etag_matches(header, etag) {
+                return Some(not_modified(etag, cache_control));
+            }
+        }
+        self.asset_response(path)
     }
 
     fn index_response(&self) -> Response {
@@ -370,7 +414,11 @@ pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Res
     let file = markdown_file(&state, query_param(&req, "path")).await?;
     let (content, lossy) = fs::read_text(&file).await?;
     let etag = hash::etag(&content);
-    let extra: &[(&str, &str)] = if lossy { &[("x-markvi-lossy", "1")] } else { &[] };
+    let extra: &[(&str, &str)] = if lossy {
+        &[("x-markvi-lossy", "1")]
+    } else {
+        &[]
+    };
     Ok(text_response(
         200,
         "text/plain; charset=utf-8",
@@ -416,7 +464,15 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
                         NO_STORE,
                     )));
                 }
-            } else if !create && tokio::fs::metadata(&file).await.is_err() {
+            } else if create {
+                // `create=1` solo crea: sin `If-Match` no pisa un archivo que ya existe.
+                if tokio::fs::symlink_metadata(&file).await.is_ok() {
+                    return Err(ApiError::new(
+                        409,
+                        "A file or folder already exists at that path.",
+                    ));
+                }
+            } else if tokio::fs::metadata(&file).await.is_err() {
                 return Err(ApiError::new(404, "File not found."));
             }
             if !force && matches!(fs::is_valid_utf8(&file).await, Ok(false)) {
@@ -433,8 +489,11 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
                 .await
                 .map_err(|_| ApiError::new(500, "Internal error."))??;
             Ok(None)
-        }).await
-    }).await.map_err(|_| ApiError::new(500, "Internal error."))??;
+        })
+        .await
+    })
+    .await
+    .map_err(|_| ApiError::new(500, "Internal error."))??;
     Ok(result.unwrap_or_else(|| empty_response(204, Some(response_etag))))
 }
 
@@ -457,8 +516,11 @@ pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Re
                 .await
                 .map_err(|_| ApiError::new(500, "Internal error."))??;
             Ok(empty_response(201, Some(hash::etag(&body))))
-        }).await
-    }).await.map_err(|_| ApiError::new(500, "Internal error."))?
+        })
+        .await
+    })
+    .await
+    .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
 pub async fn file_delete(
@@ -521,13 +583,32 @@ async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiEr
 
     // Para archivos regulares, enlace + borrado: nunca un rename sobre un
     // destino aparecido entre la comprobación y la escritura.
-    match tokio::fs::hard_link(entry, target).await {
+    link_or_rename(entry, target, tokio::fs::hard_link(entry, target).await).await
+}
+
+/// Completa el movimiento según el resultado de `hard_link(entry, target)`.
+async fn link_or_rename(
+    entry: &Path,
+    target: &Path,
+    linked: std::io::Result<()>,
+) -> Result<(), ApiError> {
+    match linked {
         Ok(()) => tokio::fs::remove_file(entry).await?,
-        Err(error) if matches!(error.raw_os_error(), Some(1 | 18 | 38 | 95)) => {
-            // Sistema sin enlaces duros: comportamiento anterior.
+        Err(error) if fs::hard_link_unsupported(&error) => {
+            // Sin enlaces duros: rename, tras volver a comprobar que el destino sigue libre.
+            match tokio::fs::symlink_metadata(target).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return Err(ApiError::new(
+                        409,
+                        "A file or folder already exists at that path.",
+                    ))
+                }
+            }
             tokio::fs::rename(entry, target).await?;
         }
-        Err(error) if error.raw_os_error() == Some(17) => {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(ApiError::new(
                 409,
                 "A file or folder already exists at that path.",
@@ -637,14 +718,14 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
     Ok(response)
 }
 
-pub async fn index_get(State(state): State<AppState>) -> Response {
-    state.assets.index_response()
+pub async fn index_get(State(state): State<AppState>, req: Request) -> Response {
+    state.assets.index_conditional(if_none_match(&req))
 }
 
 pub async fn asset_get(State(state): State<AppState>, req: Request) -> Response {
     state
         .assets
-        .asset_response(req.uri().path())
+        .asset_conditional(req.uri().path(), if_none_match(&req))
         .unwrap_or_else(|| state.assets.fallback())
 }
 
@@ -810,6 +891,36 @@ mod tests {
             assert!(!alias.exists());
             assert!(real.exists());
         }
+    }
+
+    #[tokio::test]
+    async fn respaldo_sin_hard_link_hace_rename_si_el_destino_sigue_libre() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "contenido").unwrap();
+        let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
+        link_or_rename(&source, &target, Err(unsupported))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
+        assert!(!source.exists());
+    }
+
+    #[tokio::test]
+    async fn respaldo_sin_hard_link_no_pisa_un_destino_aparecido() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "origen").unwrap();
+        std::fs::write(&target, "destino").unwrap();
+        let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
+        let error = link_or_rename(&source, &target, Err(unsupported))
+            .await
+            .unwrap_err();
+        assert_eq!(status(error), 409);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "destino");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
     }
 
     #[test]

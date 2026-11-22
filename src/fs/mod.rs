@@ -446,7 +446,8 @@ fn is_permission(error: &std::io::Error) -> bool {
     }
 }
 
-pub(crate) fn hard_link_unsupported(error: &std::io::Error) -> bool {
+/// Errores que indican "este sistema de archivos no admite enlaces duros".
+pub fn hard_link_unsupported(error: &std::io::Error) -> bool {
     if matches!(
         error.kind(),
         std::io::ErrorKind::PermissionDenied
@@ -455,9 +456,14 @@ pub(crate) fn hard_link_unsupported(error: &std::io::Error) -> bool {
     ) {
         return true;
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    // EPERM, EOPNOTSUPP/ENOTSUP, ENOSYS, EXDEV según el sistema (los números difieren).
+    #[cfg(target_os = "linux")]
     {
         matches!(error.raw_os_error(), Some(1 | 95 | 38 | 18))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        matches!(error.raw_os_error(), Some(1 | 45 | 102 | 78 | 18))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

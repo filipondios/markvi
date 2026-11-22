@@ -543,3 +543,59 @@ fn files_sirve_range_head_y_cabeceras_para_cualquier_tipo() {
         "{headers:?}"
     );
 }
+
+#[test]
+fn put_create_sobre_archivo_existente_da_409_y_no_lo_pisa() {
+    let fixture = Fixture::new();
+    let put = |path: &str, query: &str| {
+        fixture.request(format!(
+            "PUT /api/file?path={path}{query} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            fixture.port
+        ))
+    };
+    let existing = put("index.md", "&create=1");
+    assert!(existing.contains("409"), "{existing:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("index.md")).unwrap(),
+        "# indice\n"
+    );
+
+    let created = put("fresco.md", "&create=1");
+    assert!(created.contains("204"), "{created:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("fresco.md")).unwrap(),
+        "nuevo"
+    );
+}
+
+#[test]
+fn estaticos_responden_304_con_if_none_match() {
+    let fixture = Fixture::new();
+    let first = get_request(&fixture, "/");
+    assert!(first.contains("200 OK"), "{first:?}");
+    let etag = first
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("etag:")
+                .then(|| line.split_once(':').unwrap().1.trim().to_string())
+        })
+        .expect("index sin ETag");
+    let conditional = |etag: &str| {
+        fixture.request(format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-None-Match: {etag}\r\nConnection: close\r\n\r\n",
+            fixture.port
+        ))
+    };
+    let cached = conditional(&etag);
+    assert!(cached.contains("304 Not Modified"), "{cached:?}");
+    assert!(
+        cached.to_lowercase().contains("cache-control:"),
+        "{cached:?}"
+    );
+    assert!(!cached.contains("<!doctype"), "304 con cuerpo");
+    let other = conditional("\"otro\"");
+    assert!(other.contains("200 OK"), "{other:?}");
+    let weak = conditional(&format!("W/{etag}, \"x\""));
+    assert!(weak.contains("304"), "{weak:?}");
+}
