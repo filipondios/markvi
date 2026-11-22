@@ -403,35 +403,37 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
     let body = body_string(req).await?;
 
-    let write_target = file.clone();
-    let write_body = body.clone();
-    let result = fs::with_file_lock(&state.locks, &fs::lock_key(&file), async {
-        if let Some(if_match) = if_match {
-            let current = match fs::read_lossy(&file).await {
-                Ok(text) => text,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(ApiError::new(404, "File not found."));
+    let locks = state.locks.clone();
+    let response_etag = hash::etag(&body);
+    let result = tokio::spawn(async move {
+        let key = fs::lock_key(&file).await;
+        fs::with_file_lock(&locks, &key, async move {
+            if let Some(if_match) = if_match {
+                let current = match fs::read_lossy(&file).await {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(ApiError::new(404, "File not found."));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let etag = hash::etag(&current);
+                if if_match != "*" && if_match != etag {
+                    return Ok(Some(json_response(
+                        409,
+                        json!({ "error": "The file changed on disk.", "etag": etag }),
+                        NO_STORE,
+                    )));
                 }
-                Err(error) => return Err(error.into()),
-            };
-            let etag = hash::etag(&current);
-            if if_match != "*" && if_match != etag {
-                return Ok(Some(json_response(
-                    409,
-                    json!({ "error": "The file changed on disk.", "etag": etag }),
-                    NO_STORE,
-                )));
+            } else if !create && tokio::fs::metadata(&file).await.is_err() {
+                return Err(ApiError::new(404, "File not found."));
             }
-        } else if !create && tokio::fs::metadata(&file).await.is_err() {
-            return Err(ApiError::new(404, "File not found."));
-        }
-        fs::spawn_write(write_target, write_body, false)
-            .await
-            .map_err(|_| ApiError::new(500, "Internal error."))??;
-        Ok(None)
-    })
-    .await?;
-    Ok(result.unwrap_or_else(|| empty_response(204, Some(hash::etag(&body)))))
+            fs::spawn_write(file, body, false)
+                .await
+                .map_err(|_| ApiError::new(500, "Internal error."))??;
+            Ok(None)
+        }).await
+    }).await.map_err(|_| ApiError::new(500, "Internal error."))??;
+    Ok(result.unwrap_or_else(|| empty_response(204, Some(response_etag))))
 }
 
 pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
@@ -445,15 +447,16 @@ pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Re
     if let Some(parent) = file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let write_target = file.clone();
-    let write_body = body.clone();
-    fs::with_file_lock(&state.locks, &fs::lock_key(&file), async {
-        fs::spawn_write(write_target, write_body, true)
-            .await
-            .map_err(|_| ApiError::new(500, "Internal error."))??;
-        Ok(empty_response(201, Some(hash::etag(&body))))
-    })
-    .await
+    let locks = state.locks.clone();
+    tokio::spawn(async move {
+        let key = fs::lock_key(&file).await;
+        fs::with_file_lock(&locks, &key, async move {
+            fs::spawn_write(file, body.clone(), true)
+                .await
+                .map_err(|_| ApiError::new(500, "Internal error."))??;
+            Ok(empty_response(201, Some(hash::etag(&body))))
+        }).await
+    }).await.map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
 pub async fn file_delete(
@@ -466,7 +469,7 @@ pub async fn file_delete(
         return Err(ApiError::new(400, "Only .md files are supported."));
     }
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
-    fs::with_file_lock(&state.locks, &fs::lock_key(&real), async {
+    fs::with_file_lock(&state.locks, &fs::lock_key(&real).await, async {
         if let Some(if_match) = if_match {
             if if_match != "*" {
                 let content = fs::read_lossy(&real).await?;
@@ -549,7 +552,7 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
         tokio::fs::create_dir_all(parent).await?;
     }
     // Desviación A-019: bloquear también el destino para dos moves concurrentes.
-    let mut keys = [fs::lock_key(&real), fs::lock_key(&target)];
+    let mut keys = [fs::lock_key(&real).await, fs::lock_key(&target).await];
     keys.sort();
     let locks_first = state.locks.clone();
     let locks_second = state.locks.clone();

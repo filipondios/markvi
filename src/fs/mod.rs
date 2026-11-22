@@ -431,7 +431,7 @@ fn is_permission(error: &std::io::Error) -> bool {
     }
 }
 
-fn hard_link_unsupported(error: &std::io::Error) -> bool {
+pub(crate) fn hard_link_unsupported(error: &std::io::Error) -> bool {
     if matches!(
         error.kind(),
         std::io::ErrorKind::PermissionDenied
@@ -451,11 +451,17 @@ fn hard_link_unsupported(error: &std::io::Error) -> bool {
 }
 
 /// Escritura directa de respaldo: si falla, no deja un archivo a medias.
-async fn direct_create_with_cleanup<Fut>(target: &Path, write: Fut) -> std::io::Result<()>
+async fn direct_create_with_cleanup<F, Fut>(target: &Path, write: F) -> std::io::Result<()>
 where
+    F: FnOnce(tokio::fs::File) -> Fut,
     Fut: Future<Output = std::io::Result<()>>,
 {
-    if let Err(error) = write.await {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Un AlreadyExists (o cualquier error de apertura) no nos da propiedad
+    // del target: en ese caso nunca debemos intentar eliminarlo.
+    let handle = options.open(target).await?;
+    if let Err(error) = write(handle).await {
         let _ = tokio::fs::remove_file(target).await;
         return Err(error);
     }
@@ -463,11 +469,10 @@ where
 }
 
 async fn create_direct(target: &Path, data: &str) -> std::io::Result<()> {
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut handle = options.open(target).await?;
-    handle.write_all(data.as_bytes()).await?;
-    handle.sync_all().await
+    direct_create_with_cleanup(target, |mut handle| async move {
+        handle.write_all(data.as_bytes()).await?;
+        handle.sync_all().await
+    }).await
 }
 
 async fn write_temp(target: &Path, data: &str, mode: Option<u32>) -> std::io::Result<PathBuf> {
@@ -500,9 +505,12 @@ async fn write_temp(target: &Path, data: &str, mode: Option<u32>) -> std::io::Re
 async fn sync_directory(directory: &Path) {
     #[cfg(unix)]
     {
-        if let Ok(handle) = std::fs::File::open(directory) {
-            let _ = handle.sync_all();
-        }
+        let directory = directory.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(handle) = std::fs::File::open(directory) {
+                let _ = handle.sync_all();
+            }
+        }).await;
     }
     #[cfg(not(unix))]
     let _ = directory;
@@ -537,7 +545,7 @@ pub async fn create_file_exclusive(target: &Path, data: &str) -> std::io::Result
     if let Err(error) = result {
         if hard_link_unsupported(&error) {
             if let Err(fallback) =
-                direct_create_with_cleanup(target, create_direct(target, data)).await
+                create_direct(target, data).await
             {
                 let _ = tokio::fs::remove_file(&temp).await;
                 return Err(fallback);
@@ -565,13 +573,16 @@ impl Locks {
 
 /// Clave estable: ruta canónica del archivo (o del padre si aún no existe),
 /// para que un symlink y su destino compartan candado.
-pub fn lock_key(path: &Path) -> String {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
-        let parent = path.parent().unwrap_or(Path::new("/"));
-        std::fs::canonicalize(parent)
-            .unwrap_or_else(|_| parent.to_path_buf())
-            .join(path.file_name().unwrap_or_default())
-    });
+pub async fn lock_key(path: &Path) -> String {
+    let resolved = match tokio::fs::canonicalize(path).await {
+        Ok(path) => path,
+        Err(_) => {
+            let parent = path.parent().unwrap_or(Path::new("/"));
+            tokio::fs::canonicalize(parent).await
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join(path.file_name().unwrap_or_default())
+        }
+    };
     resolved.to_string_lossy().into_owned()
 }
 
@@ -639,7 +650,7 @@ mod tests {
             let alias = dir.join("alias.md");
             std::fs::write(&real, "x").unwrap();
             std::os::unix::fs::symlink("real.md", &alias).unwrap();
-            assert_eq!(lock_key(&real), lock_key(&alias));
+            assert_eq!(lock_key(&real).await, lock_key(&alias).await);
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -666,20 +677,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lock_y_escritura_sobreviven_a_cancelacion_del_handler() {
+        let dir = std::env::temp_dir().join(format!("markvi-lock-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("nota.md");
+        std::fs::write(&target, "antiguo").unwrap();
+
+        let locks = Arc::new(Locks::default());
+        let key = lock_key(&target).await;
+        let task_locks = locks.clone();
+        let task_target = target.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+
+        // Esta tarea representa la sección crítica que ya no pertenece al
+        // ciclo de vida del handler HTTP.
+        let handler_task = tokio::spawn(async move {
+            with_file_lock(&task_locks, &key, async move {
+                let _ = started_tx.send(());
+                let _ = continue_rx.await;
+                tokio::fs::write(&task_target, "nuevo").await.unwrap();
+            }).await;
+        });
+        started_rx.await.unwrap();
+        drop(handler_task); // el cliente cancela el handler
+
+        let second_locks = locks.clone();
+        let second_target = target.clone();
+        let second_key = lock_key(&target).await;
+        let second_put = tokio::spawn(async move {
+            with_file_lock(&second_locks, &second_key, async move {
+                let current = tokio::fs::read_to_string(&second_target).await.unwrap();
+                // Equivale a If-Match con el ETag/contenido anterior.
+                assert_ne!(current, "antiguo");
+                current
+            }).await
+        });
+
+        continue_tx.send(()).unwrap();
+        assert_eq!(second_put.await.unwrap(), "nuevo");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn fallo_en_el_fallback_no_deja_archivo_parcial() {
         let dir = std::env::temp_dir().join(format!("markvi-fs-fallback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("creado.md");
 
-        let result: std::io::Result<()> = direct_create_with_cleanup(&target, async {
-            std::fs::write(&target, "parcial")?;
+        let result: std::io::Result<()> = direct_create_with_cleanup(&target, |mut handle| async move {
+            use tokio::io::AsyncWriteExt;
+            handle.write_all(b"parcial").await?;
             Err(std::io::Error::other("fallo simulado tras escribir"))
-        })
-        .await;
+        }).await;
 
         assert!(result.is_err());
         assert!(!target.exists(), "quedó el archivo parcial");
+
+        std::fs::write(&target, "ajeno").unwrap();
+        let result = direct_create_with_cleanup(&target, |_handle| async {
+            Ok(())
+        }).await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "ajeno");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
