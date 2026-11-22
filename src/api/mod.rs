@@ -94,22 +94,6 @@ fn empty_response(status: u16, etag: Option<String>) -> Response {
     builder.body(Body::empty()).expect("valid response")
 }
 
-fn bytes_response(
-    status: u16,
-    content_type: &str,
-    body: Vec<u8>,
-    extra: &[(&str, &str)],
-) -> Response {
-    let mut builder = Response::builder()
-        .status(StatusCode::from_u16(status).unwrap())
-        .header("cache-control", NO_STORE)
-        .header("content-type", content_type);
-    for (name, value) in extra {
-        builder = builder.header(*name, *value);
-    }
-    builder.body(Body::from(body)).expect("valid response")
-}
-
 fn text_response(
     status: u16,
     content_type: &str,
@@ -289,13 +273,19 @@ impl AppState {
     }
 }
 
+/// Decodifica un componente `application/x-www-form-urlencoded`: primero `+` → espacio
+/// sobre el texto crudo y después `%XX` (así `%2B` sigue siendo `+`).
+fn decode_form(raw: &str) -> Option<String> {
+    pure::percent_decode(&raw.replace('+', " "))
+}
+
 fn query_param(req: &Request, key: &str) -> Option<String> {
     let query = req.uri().query()?;
     for pair in query.split('&') {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let decoded_name = percent_decode(name).ok()?.replace('+', " ");
-        if decoded_name == key {
-            return Some(percent_decode(value).ok()?.replace('+', " "));
+        // Un nombre mal codificado no puede ser el buscado: se ignora sin afectar al resto.
+        if decode_form(name).is_some_and(|decoded| decoded == key) {
+            return decode_form(value);
         }
     }
     None
@@ -378,14 +368,15 @@ pub async fn backlinks_get(
 
 pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let file = markdown_file(&state, query_param(&req, "path")).await?;
-    let content = fs::read_lossy(&file).await?;
+    let (content, lossy) = fs::read_text(&file).await?;
     let etag = hash::etag(&content);
+    let extra: &[(&str, &str)] = if lossy { &[("x-markvi-lossy", "1")] } else { &[] };
     Ok(text_response(
         200,
         "text/plain; charset=utf-8",
         content,
         Some(etag),
-        &[],
+        extra,
     ))
 }
 
@@ -401,6 +392,7 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
         markdown_file(&state, query_param(&req, "path")).await?
     };
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
+    let force = query_param(&req, "force").as_deref() == Some("1");
     let body = body_string(req).await?;
 
     let locks = state.locks.clone();
@@ -426,6 +418,16 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
                 }
             } else if !create && tokio::fs::metadata(&file).await.is_err() {
                 return Err(ApiError::new(404, "File not found."));
+            }
+            if !force && matches!(fs::is_valid_utf8(&file).await, Ok(false)) {
+                return Ok(Some(json_response(
+                    409,
+                    json!({
+                        "error": "The file is not valid UTF-8; saving would alter it.",
+                        "code": "not-utf8"
+                    }),
+                    NO_STORE,
+                )));
             }
             fs::spawn_write(file, body, false)
                 .await
@@ -609,39 +611,30 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
         .unwrap_or(req.uri().path());
     let decoded = percent_decode(encoded)?;
     let file = fs::resolve_file(&state.root, Some(&decoded)).await?;
-    let content_type = mime_for(&file);
-    if serves_with_range(&file) {
-        let response = ServeFile::new(&file)
-            .oneshot(req)
-            .await
-            .expect("ServeFile es infalible");
-        let mut response = response.map(Body::new);
-        let headers = response.headers_mut();
+    let is_markdown = pure::is_markdown_path(&file.to_string_lossy());
+    // ServeFile aporta Range, HEAD, If-Range y el MIME (mime_guess) sin cargar el archivo.
+    let response = ServeFile::new(&file)
+        .oneshot(req)
+        .await
+        .expect("ServeFile es infalible");
+    let mut response = response.map(Body::new);
+    let headers = response.headers_mut();
+    if is_markdown {
         headers.insert(
             header::CONTENT_TYPE,
-            HeaderValue::from_str(content_type).expect("MIME válido"),
+            HeaderValue::from_static("text/markdown"),
         );
-        headers.insert(
-            "content-security-policy",
-            HeaderValue::from_static("sandbox"),
-        );
-        headers.insert(
-            "x-content-type-options",
-            HeaderValue::from_static("nosniff"),
-        );
-        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
-        return Ok(response);
     }
-    let body = tokio::fs::read(&file).await?;
-    Ok(bytes_response(
-        200,
-        content_type,
-        body,
-        &[
-            ("content-security-policy", "sandbox"),
-            ("x-content-type-options", "nosniff"),
-        ],
-    ))
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("sandbox"),
+    );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+    Ok(response)
 }
 
 pub async fn index_get(State(state): State<AppState>) -> Response {
@@ -671,49 +664,6 @@ fn relative_path(from: &Path, to: &Path) -> PathBuf {
         out.push(part.as_os_str());
     }
     out
-}
-
-/// Tipos binarios grandes: `ServeFile` aporta Range y HEAD.
-fn serves_with_range(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("")
-            .to_lowercase()
-            .as_str(),
-        "webp" | "avif" | "mp4" | "webm" | "mp3" | "ogg" | "pdf"
-    )
-}
-
-fn mime_for(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_lowercase()
-        .as_str()
-    {
-        "md" => "text/markdown",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "css" => "text/css",
-        "js" => "text/javascript",
-        "woff2" => "font/woff2",
-        "html" => "text/html",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "ico" => "image/x-icon",
-        "pdf" => "application/pdf",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
-        "txt" => "text/plain",
-        "json" => "application/json",
-        _ => "application/octet-stream",
-    }
 }
 
 fn percent_decode(value: &str) -> Result<String, ApiError> {
@@ -877,25 +827,6 @@ mod tests {
             serde_json::to_string(&loaded).unwrap(),
             r#"{"config":{"leader":" ","theme":"dark","font":null,"editor":{"number":true,"relativenumber":false,"scrolloff":0},"leaderBindings":[{"keys":["f"],"action":"find"},{"keys":["/"],"action":"grep"},{"keys":["r"],"action":"recent"},{"keys":["a"],"action":"alternate"},{"keys":["t"],"action":"toc"},{"keys":["b"],"action":"backlinks"},{"keys":["x"],"action":"close"}],"viewRemap":{"J":"j","K":"k"},"vimMappings":[],"render":{"footnotes":true,"alerts":true,"frontmatter":true,"remoteimages":false}},"warnings":[],"path":"/tmp/markvi-config.toml","exists":true}"#
         );
-    }
-
-    #[test]
-    fn mime_por_extension() {
-        let casos = [
-            ("a.webp", "image/webp"),
-            ("a.avif", "image/avif"),
-            ("a.ico", "image/x-icon"),
-            ("a.pdf", "application/pdf"),
-            ("a.mp4", "video/mp4"),
-            ("a.webm", "video/webm"),
-            ("a.mp3", "audio/mpeg"),
-            ("a.ogg", "audio/ogg"),
-            ("a.txt", "text/plain"),
-            ("a.json", "application/json"),
-        ];
-        for (name, expected) in casos {
-            assert_eq!(mime_for(Path::new(name)), expected, "{name}");
-        }
     }
 
     fn header(response: &Response, name: &str) -> String {

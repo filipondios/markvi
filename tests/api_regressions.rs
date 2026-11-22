@@ -199,7 +199,7 @@ fn archivo_no_utf8_es_lossy_en_get_put_ifmatch_y_busqueda() {
 
     let put = fixture.request(
         format!(
-            "PUT /api/file?path=nota.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-Match: {etag}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            "PUT /api/file?path=nota.md&force=1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-Match: {etag}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
             fixture.port
         ),
     );
@@ -425,4 +425,121 @@ fn sigterm_closes_server_with_sse_client_open() {
     let exited = fixture.wait_exit(Duration::from_secs(5));
     let _ = stream.shutdown(std::net::Shutdown::Both);
     assert!(exited, "el servidor no cerró con un cliente SSE abierto");
+}
+
+fn get_request(fixture: &Fixture, path: &str) -> String {
+    fixture.request(format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        fixture.port
+    ))
+}
+
+#[test]
+fn mas_codificado_se_conserva_en_query() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("c++ notes.md"), "# cpp\n").unwrap();
+    fs::write(fixture.root.join("a b.md"), "# ab\n").unwrap();
+    fs::write(fixture.root.join("otra.md"), "solo c++ aqui\n").unwrap();
+
+    let get = get_request(&fixture, "/api/file?path=c%2B%2B%20notes.md");
+    assert!(get.contains("200 OK"), "{get:?}");
+
+    let plus = get_request(&fixture, "/api/file?path=a+b.md");
+    assert!(plus.contains("200 OK"), "{plus:?}");
+
+    let search = get_request(&fixture, "/api/search?q=c%2B%2B");
+    assert!(search.contains("otra.md"), "{search:?}");
+
+    // Un parámetro ajeno mal codificado no afecta al buscado...
+    let other = get_request(&fixture, "/api/file?x=%zz&path=index.md");
+    assert!(other.contains("200 OK"), "{other:?}");
+    // ...pero el propio parámetro inválido da 400.
+    let bad = get_request(&fixture, "/api/file?path=%zz");
+    assert!(bad.contains("400 Bad Request"), "{bad:?}");
+}
+
+#[test]
+fn guardar_no_utf8_exige_force_y_no_toca_el_disco() {
+    let fixture = Fixture::new();
+    let original = b"palabra \xE9\n";
+    fs::write(fixture.root.join("latin.md"), original).unwrap();
+    let put = |query: &str| {
+        fixture.request(format!(
+            "PUT /api/file?path=latin.md{query} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            fixture.port
+        ))
+    };
+
+    let denied = put("");
+    assert!(denied.contains("409"), "{denied:?}");
+    assert!(denied.contains("not-utf8"), "{denied:?}");
+    assert_eq!(fs::read(fixture.root.join("latin.md")).unwrap(), original);
+
+    let get = get_request(&fixture, "/api/file?path=latin.md");
+    assert!(get.contains("200 OK"), "{get:?}");
+    assert!(get.to_lowercase().contains("x-markvi-lossy: 1"), "{get:?}");
+
+    let forced = put("&force=1");
+    assert!(forced.contains("204"), "{forced:?}");
+    assert_eq!(fs::read(fixture.root.join("latin.md")).unwrap(), b"nuevo");
+
+    // UTF-8 normal: sin cabecera lossy y guardado sin force.
+    let ok = fixture.request(format!(
+        "PUT /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+        fixture.port
+    ));
+    assert!(ok.contains("204"), "{ok:?}");
+    let get = get_request(&fixture, "/api/file?path=index.md");
+    assert!(!get.to_lowercase().contains("x-markvi-lossy"), "{get:?}");
+}
+
+#[test]
+fn files_sirve_range_head_y_cabeceras_para_cualquier_tipo() {
+    let fixture = Fixture::new();
+    let bytes: Vec<u8> = (0..100).collect();
+    fs::write(fixture.root.join("clip.mov"), &bytes).unwrap();
+    fs::write(fixture.root.join("img.png"), &bytes).unwrap();
+
+    for name in ["clip.mov", "img.png"] {
+        let (headers, body) = fixture.request_response(format!(
+            "GET /files/{name} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nRange: bytes=0-9\r\nConnection: close\r\n\r\n",
+            fixture.port
+        ));
+        let lower = headers.to_lowercase();
+        assert!(headers.contains("206"), "{name}: {headers:?}");
+        assert!(
+            lower.contains("content-range: bytes 0-9/100"),
+            "{headers:?}"
+        );
+        assert!(
+            lower.contains("content-security-policy: sandbox"),
+            "{headers:?}"
+        );
+        assert!(
+            lower.contains("x-content-type-options: nosniff"),
+            "{headers:?}"
+        );
+        assert!(lower.contains("cache-control: no-store"), "{headers:?}");
+        assert_eq!(body, bytes[..10], "{name}");
+
+        let (headers, body) = fixture.request_response(format!(
+            "HEAD /files/{name} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            fixture.port
+        ));
+        assert!(headers.contains("200 OK"), "{name}: {headers:?}");
+        assert!(body.is_empty());
+    }
+    let (headers, body) = fixture.request_bytes("/files/img.png");
+    assert!(
+        headers.to_lowercase().contains("content-type: image/png"),
+        "{headers:?}"
+    );
+    assert_eq!(body, bytes);
+    let (headers, _) = fixture.request_bytes("/files/index.md");
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("content-type: text/markdown"),
+        "{headers:?}"
+    );
 }

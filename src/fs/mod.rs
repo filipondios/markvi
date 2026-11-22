@@ -102,6 +102,21 @@ pub async fn read_lossy(path: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Como `read_lossy`, indicando si hubo sustituciones (el archivo no era UTF-8 válido).
+pub async fn read_text(path: &Path) -> std::io::Result<(String, bool)> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(match String::from_utf8(bytes) {
+        Ok(text) => (text, false),
+        Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
+    })
+}
+
+/// `Ok(false)` si el archivo existe y no es UTF-8 válido; `NotFound` se propaga.
+pub async fn is_valid_utf8(path: &Path) -> std::io::Result<bool> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(std::str::from_utf8(&bytes).is_ok())
+}
+
 fn missing_path() -> HttpError {
     HttpError::new(400, "Missing or invalid path.")
 }
