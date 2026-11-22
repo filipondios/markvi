@@ -368,11 +368,54 @@ fn euid() -> Option<u32> {
         .ok()
 }
 
+#[tokio::test]
+async fn config_sin_home_no_carga_nada_ni_toca_tmp() {
+    let path = config::resolve_config_path_with_home(None, &[], None);
+    assert!(path.as_os_str().is_empty(), "{}", path.display());
+    let loaded = config::load_config(&path).await;
+    assert!(!loaded.exists);
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.warnings[0].contains("HOME"), "{:?}", loaded.warnings);
+
+    // Con HOME o con el home del sistema sigue resolviéndose bajo ~/.config.
+    let env = vec![("HOME".to_string(), "/home/u".to_string())];
+    assert_eq!(
+        config::resolve_config_path_with_home(None, &env, None),
+        PathBuf::from("/home/u/.config/markvi/config.toml")
+    );
+    assert_eq!(
+        config::resolve_config_path_with_home(None, &[], Some(PathBuf::from("/h"))),
+        PathBuf::from("/h/.config/markvi/config.toml")
+    );
+}
+
 #[test]
-fn config_sin_home_no_cae_en_el_directorio_actual() {
-    let path = config::resolve_config_path(None, &[]);
-    assert!(path.is_absolute(), "ruta relativa: {}", path.display());
-    assert!(path.ends_with("markvi/config.toml"));
+fn toml_roto_informa_linea_y_columna() {
+    let (_, warnings) = config::parse_config(Some("theme = 'dark'\n\nfoo = = 3\n"));
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].starts_with("Syntax error at line 3, col"),
+        "{warnings:?}"
+    );
+}
+
+#[tokio::test]
+async fn config_de_mas_de_1_mib_se_ignora_con_aviso() {
+    let temp = Temp::new();
+    let big = temp.write("grande.toml", &format!("# {}\n", "x".repeat(1024 * 1024)));
+    let loaded = config::load_config(&big).await;
+    assert!(loaded.exists);
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(
+        loaded.warnings[0].contains("1 MiB"),
+        "{:?}",
+        loaded.warnings
+    );
+
+    let ok = temp.write("ok.toml", "theme = 'dark'\n");
+    let loaded = config::load_config(&ok).await;
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(loaded.config.theme, pure::Theme::Dark);
 }
 
 #[cfg(unix)]

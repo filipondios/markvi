@@ -13,7 +13,22 @@ pub struct LoadedConfig {
     pub exists: bool,
 }
 
+/// Límite de lectura del archivo de configuración.
+pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// Ruta de la configuración. Vacía si no se puede localizar ningún directorio
+/// personal: en ese caso no se carga configuración (ver `load_config`).
 pub fn resolve_config_path(flag: Option<&Path>, env: &[(String, String)]) -> PathBuf {
+    #[allow(deprecated)]
+    resolve_config_path_with_home(flag, env, std::env::home_dir())
+}
+
+/// Como `resolve_config_path`, con el directorio personal del sistema inyectado.
+pub fn resolve_config_path_with_home(
+    flag: Option<&Path>,
+    env: &[(String, String)],
+    system_home: Option<PathBuf>,
+) -> PathBuf {
     let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
     if let Some(flag) = flag.filter(|value| !value.as_os_str().is_empty()) {
         return absolute_or_join(flag);
@@ -24,18 +39,13 @@ pub fn resolve_config_path(flag: Option<&Path>, env: &[(String, String)]) -> Pat
     let base = match get("XDG_CONFIG_HOME") {
         Some(home) if Path::new(&home).is_absolute() => PathBuf::from(home),
         _ => {
-            let home = get("HOME")
+            let Some(home) = get("HOME")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
-                .or_else(|| {
-                    #[allow(deprecated)]
-                    std::env::home_dir()
-                })
-                .unwrap_or_else(|| {
-                    eprintln!(
-                        "MARKVI: HOME no definido; no se pudo resolver el directorio personal"
-                    );
-                    std::env::temp_dir()
-                });
+                .or(system_home)
+            else {
+                return PathBuf::new();
+            };
             home.join(".config")
         }
     };
@@ -429,6 +439,22 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
     (config, warnings)
 }
 
+/// Línea y columna (desde 1, en caracteres) de un desplazamiento en bytes.
+fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut end = offset.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let before = &text[..end];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .map_or(0, |last| last.chars().count())
+        + 1;
+    (line, column)
+}
+
 pub fn parse_config(text: Option<&str>) -> (Config, Vec<String>) {
     let Some(text) = text else {
         return (pure::default_config(), Vec::new());
@@ -440,13 +466,44 @@ pub fn parse_config(text: Option<&str>) -> (Config, Vec<String>) {
         Ok(raw) => validate_config(&raw),
         Err(error) => (
             pure::default_config(),
-            vec![format!("Syntax error: {}", error.message())],
+            vec![match error.span() {
+                Some(span) => {
+                    let (line, column) = line_column(text, span.start);
+                    format!(
+                        "Syntax error at line {line}, col {column}: {}",
+                        error.message()
+                    )
+                }
+                None => format!("Syntax error: {}", error.message()),
+            }],
         ),
     }
 }
 
+/// Lee como mucho `MAX_CONFIG_BYTES + 1` bytes: basta para saber si se pasa del tope.
+async fn read_limited(path: &Path) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    Ok(bytes)
+}
+
 pub async fn load_config(path: &Path) -> LoadedConfig {
     let path_string = path.to_string_lossy().into_owned();
+    if path.as_os_str().is_empty() {
+        return LoadedConfig {
+            config: pure::default_config(),
+            warnings: vec![
+                "HOME and XDG_CONFIG_HOME are not set; no config file was loaded (use --config)."
+                    .to_string(),
+            ],
+            path: path_string,
+            exists: false,
+        };
+    }
     // Distinguir "no existe" de "existe pero no se puede leer" es observable.
     let exists = tokio::fs::try_exists(path).await.unwrap_or(true);
     if !exists {
@@ -457,7 +514,15 @@ pub async fn load_config(path: &Path) -> LoadedConfig {
             exists: false,
         };
     }
-    let bytes = match tokio::fs::read(path).await {
+    let bytes = match read_limited(path).await {
+        Ok(bytes) if bytes.len() as u64 > MAX_CONFIG_BYTES => {
+            return LoadedConfig {
+                config: pure::default_config(),
+                warnings: vec!["The config file is larger than 1 MiB; ignored.".to_string()],
+                path: path_string,
+                exists: true,
+            }
+        }
         Ok(bytes) => bytes,
         Err(error) => {
             return LoadedConfig {

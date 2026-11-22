@@ -505,17 +505,23 @@ pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Re
     }
     let file = fs::resolve_new(&state.root, Some(path)).await?;
     let body = body_string(req).await?;
-    if let Some(parent) = file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
     let locks = state.locks.clone();
     tokio::spawn(async move {
         let key = fs::lock_key(&file).await;
         fs::with_file_lock(&locks, &key, async move {
-            fs::spawn_write(file, body.clone(), true)
-                .await
-                .map_err(|_| ApiError::new(500, "Internal error."))??;
-            Ok(empty_response(201, Some(hash::etag(&body))))
+            // Los directorios padre se crean bajo el candado y justo antes de escribir;
+            // si la escritura falla, se retiran los que se crearon.
+            let created = create_parents(&file).await?;
+            let etag = hash::etag(&body);
+            let written = match fs::spawn_write(file, body, true).await {
+                Ok(result) => result.map_err(ApiError::from),
+                Err(_) => Err(ApiError::new(500, "Internal error.")),
+            };
+            if let Err(error) = written {
+                remove_created(&created).await;
+                return Err(error);
+            }
+            Ok(empty_response(201, Some(etag)))
         })
         .await
     })
@@ -553,6 +559,47 @@ pub async fn file_delete(
     .await
 }
 
+/// Crea los directorios padre de `file` que falten y devuelve los creados
+/// (del más externo al más interno).
+async fn create_parents(file: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let Some(parent) = file.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut missing = Vec::new();
+    let mut current = parent;
+    while tokio::fs::symlink_metadata(current).await.is_err() {
+        missing.push(current.to_path_buf());
+        match current.parent() {
+            Some(next) => current = next,
+            None => break,
+        }
+    }
+    missing.reverse();
+    if let Err(error) = tokio::fs::create_dir_all(parent).await {
+        remove_created(&missing).await;
+        return Err(error);
+    }
+    Ok(missing)
+}
+
+/// Retira, del más interno al más externo, los directorios creados por `create_parents`.
+/// `remove_dir` solo borra directorios vacíos, así que nunca toca contenido ajeno.
+async fn remove_created(created: &[PathBuf]) {
+    for dir in created.iter().rev() {
+        let _ = tokio::fs::remove_dir(dir).await;
+    }
+}
+
+/// `move_into` creando antes los padres del destino; si falla, no deja directorios vacíos.
+async fn move_with_parents(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
+    let created = create_parents(target).await?;
+    let result = move_into(real, entry, target).await;
+    if result.is_err() {
+        remove_created(&created).await;
+    }
+    result
+}
+
 /// Mueve `entry` a `target` con el candado ya tomado. `real` es el destino del
 /// enlace cuando `entry` es un symlink (solo Unix).
 async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
@@ -572,7 +619,9 @@ async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiEr
     {
         let metadata = tokio::fs::symlink_metadata(entry).await?;
         if metadata.file_type().is_symlink() {
-            let link = relative_path(target.parent().unwrap_or(Path::new("/")), real);
+            // El padre puede ser a su vez un enlace: el relativo se calcula desde su ruta real.
+            let parent = tokio::fs::canonicalize(target.parent().unwrap_or(Path::new("/"))).await?;
+            let link = relative_path(&parent, real);
             tokio::fs::symlink(link, target).await?;
             tokio::fs::remove_file(entry).await?;
             return Ok(());
@@ -631,9 +680,6 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     }
     let (real, entry) = fs::resolve_entry(&state.root, Some(from)).await?;
     let target = fs::resolve_new(&state.root, Some(to)).await?;
-    if let Some(parent) = target.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
     // Desviación A-019: bloquear también el destino para dos moves concurrentes.
     let mut keys = [fs::lock_key(&real).await, fs::lock_key(&target).await];
     keys.sort();
@@ -643,7 +689,7 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     let second = keys[1].clone();
     fs::with_file_lock(&locks_first, &first, async move {
         fs::with_file_lock(&locks_second, &second, async move {
-            move_into(&real, &entry, &target).await?;
+            move_with_parents(&real, &entry, &target).await?;
             Ok(empty_response(204, None))
         })
         .await
@@ -921,6 +967,55 @@ mod tests {
         assert_eq!(status(error), 409);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "destino");
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
+    }
+
+    #[tokio::test]
+    async fn mover_a_carpeta_nueva_limpia_si_falla() {
+        let dir = Temp::new();
+        let missing_source = dir.path().join("no-existe.md");
+        let target = dir.path().join("nuevo/hondo/x.md");
+        let error = move_with_parents(&missing_source, &missing_source, &target)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::Io(_)), "{error:?}");
+        assert!(!dir.path().join("nuevo").exists(), "quedó nuevo/");
+
+        // Con éxito, los padres se conservan.
+        let source = dir.path().join("a.md");
+        std::fs::write(&source, "a").unwrap();
+        move_with_parents(&source, &source, &target).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "a");
+    }
+
+    #[tokio::test]
+    async fn remove_created_no_toca_directorios_con_contenido() {
+        let dir = Temp::new();
+        let file = dir.path().join("p/q/x.md");
+        let created = create_parents(&file).await.unwrap();
+        assert_eq!(created.len(), 2);
+        std::fs::write(dir.path().join("p/q/ajeno.txt"), "x").unwrap();
+        remove_created(&created).await;
+        assert!(dir.path().join("p/q/ajeno.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mover_alias_a_carpeta_que_es_symlink_deja_enlace_valido() {
+        let dir = Temp::new();
+        let real = dir.path().join("real.md");
+        let alias = dir.path().join("alias.md");
+        std::fs::write(&real, "# Destino\n").unwrap();
+        std::os::unix::fs::symlink("real.md", &alias).unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+        std::os::unix::fs::symlink("a/b/c", dir.path().join("lnk")).unwrap();
+
+        let target = dir.path().join("lnk/movido.md");
+        move_into(&real, &alias, &target).await.unwrap();
+
+        assert!(!alias.exists());
+        let link = std::fs::read_link(&target).unwrap();
+        assert_eq!(link, PathBuf::from("../../../real.md"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# Destino\n");
     }
 
     #[test]

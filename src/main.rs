@@ -81,7 +81,11 @@ async fn main() {
     let loaded = config::load_config(&config_path).await;
     println!(
         "config: {}{}",
-        config_path.display(),
+        if config_path.as_os_str().is_empty() {
+            "(none)".into()
+        } else {
+            config_path.display().to_string()
+        },
         if loaded.exists {
             ""
         } else {
