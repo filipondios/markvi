@@ -3,6 +3,7 @@ use markvi_server::core::pure::wiki_links;
 use std::time::Instant;
 
 #[test]
+#[cfg_attr(debug_assertions, ignore = "umbral de tiempo solo en release")]
 fn wiki_links_no_cuadratico_con_600kb() {
     for pattern in ["[[a ", "[[a]] "] {
         let mut text = String::with_capacity(600_000);

@@ -99,6 +99,30 @@ async fn watcher_no_vigila_directorios_ignorados_pero_si_los_nuevos() {
         "el subdirectorio nuevo no notificó: {found:?}"
     );
 
+    // El evento anterior sale del diff de `reconcile` sobre el padre. Esta
+    // modificación solo se detecta si `notas/` está vigilado de verdad.
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(sub.join("a.md"))
+        .unwrap();
+    std::io::Write::write_all(&mut file, b"mas\n").unwrap();
+    drop(file);
+    let mut later = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
+            Ok(Ok(event)) => later.push(event),
+            _ => break,
+        }
+    }
+    assert!(
+        later.contains(&DiskEvent {
+            kind: DiskEventKind::Change,
+            path: "notas/a.md".into()
+        }),
+        "el archivo del directorio nuevo no se vigila: {later:?}"
+    );
+
     let watches = inotify_watches();
     if watches != 0 {
         assert!(

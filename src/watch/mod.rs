@@ -425,6 +425,8 @@ async fn reconcile<F>(
 pub struct SseHub {
     events: broadcast::Sender<DiskEvent>,
     cancels: StdMutex<std::collections::HashMap<u64, oneshot::Sender<()>>>,
+    /// Tras `cancel_all`, las suscripciones nuevas nacen ya canceladas.
+    closed: std::sync::atomic::AtomicBool,
     next_id: std::sync::atomic::AtomicU64,
 }
 
@@ -447,6 +449,7 @@ impl SseHub {
         Self {
             events,
             cancels: StdMutex::new(std::collections::HashMap::new()),
+            closed: std::sync::atomic::AtomicBool::new(false),
             next_id: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -466,7 +469,13 @@ impl SseHub {
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut cancels) = self.cancels.lock() {
-            cancels.insert(id, tx);
+            if self.closed.load(Ordering::Acquire) {
+                // Llegó tras el cierre: sin esto el stream nunca terminaría y
+                // el apagado ordenado esperaría al cliente indefinidamente.
+                let _ = tx.send(());
+            } else {
+                cancels.insert(id, tx);
+            }
         }
         (
             receiver,
@@ -480,6 +489,7 @@ impl SseHub {
 
     pub fn cancel_all(&self) {
         if let Ok(mut cancels) = self.cancels.lock() {
+            self.closed.store(true, Ordering::Release);
             for (_, cancel) in cancels.drain() {
                 let _ = cancel.send(());
             }
@@ -549,6 +559,41 @@ impl Stream for EventStream {
 }
 
 /// Señales de apagado compartidas por el servidor real y la sonda de tests.
+/// Registra los manejadores de SIGINT/SIGTERM **ya** y devuelve el futuro que espera
+/// a cualquiera de ellos. Llamarla antes de anunciar que el servidor está listo evita
+/// que una señal temprana mate el proceso con la acción por defecto, sin apagado ordenado.
+pub fn install_shutdown_signals() -> impl std::future::Future<Output = ()> + Send + 'static {
+    #[cfg(unix)]
+    let (interrupt, terminate) = {
+        use tokio::signal::unix::{signal, SignalKind};
+        (
+            signal(SignalKind::interrupt()).ok(),
+            signal(SignalKind::terminate()).ok(),
+        )
+    };
+    async move {
+        #[cfg(unix)]
+        {
+            async fn wait(signal: Option<tokio::signal::unix::Signal>) {
+                match signal {
+                    Some(mut signal) => {
+                        signal.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            }
+            tokio::select! {
+                _ = wait(interrupt) => {},
+                _ = wait(terminate) => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
 pub async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;

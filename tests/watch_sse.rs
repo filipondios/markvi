@@ -359,3 +359,16 @@ fn shutdown_signal_handles_sigterm_and_sigint() {
         assert!(output.contains("bye"), "signal {signal}: {output:?}");
     }
 }
+
+#[tokio::test]
+async fn suscripcion_posterior_a_cancel_all_nace_cancelada() {
+    let temp = Temp::new();
+    let watcher = FileWatcher::new(temp.path());
+    let hub = watcher.hub();
+    hub.cancel_all();
+    let (_receiver, cancel, _guard) = hub.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(1), cancel)
+        .await
+        .expect("el stream tardío no se canceló: el apagado quedaría colgado")
+        .unwrap();
+}

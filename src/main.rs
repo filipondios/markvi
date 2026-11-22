@@ -25,14 +25,16 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
-async fn shutdown(mut watcher: FileWatcher) {
-    watch::shutdown_signal().await;
+async fn shutdown(mut watcher: FileWatcher, signal: impl std::future::Future<Output = ()>) {
+    signal.await;
     watcher.close();
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    // Antes de abrir el puerto: una señal temprana debe apagar de forma ordenada.
+    let signal = watch::install_shutdown_signals();
     let metadata = match tokio::fs::metadata(&args.directory).await {
         Ok(metadata) => metadata,
         Err(_) => fail(&format!(
@@ -97,7 +99,7 @@ async fn main() {
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown(shutdown_watcher))
+        .with_graceful_shutdown(shutdown(shutdown_watcher, signal))
         .await
         .expect("server failed");
 }

@@ -685,7 +685,11 @@ mod tests {
 
         // El handler se cancela: soltamos el JoinHandle sin esperarlo.
         drop(spawn_write(target.clone(), "contenido".to_string(), false));
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // Sondeo en vez de un sleep fijo: bajo carga la tarea puede tardar más.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !target.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
         let leftovers: Vec<_> = std::fs::read_dir(&dir)

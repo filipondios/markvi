@@ -35,6 +35,7 @@ impl Drop for Temp {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(debug_assertions, ignore = "umbral de tiempo solo en release")]
 async fn busqueda_sin_resultados_en_94mb_es_rapida() {
     let temp = Temp::new();
     let body = "a".repeat(23_500);

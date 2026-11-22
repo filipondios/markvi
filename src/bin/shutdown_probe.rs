@@ -1,9 +1,10 @@
 //! Sonda de tests: usa la misma función de apagado que el servidor real.
-use markvi_server::watch::shutdown_signal;
+use markvi_server::watch::install_shutdown_signals;
 
 #[tokio::main]
 async fn main() {
+    let signal = install_shutdown_signals();
     println!("ready");
-    shutdown_signal().await;
+    signal.await;
     println!("bye");
 }
