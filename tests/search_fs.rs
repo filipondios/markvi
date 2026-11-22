@@ -78,6 +78,66 @@ async fn search_markdown_limits_and_exclusions() {
 }
 
 #[tokio::test]
+async fn search_memory_skips_huge_files_and_stops_reading_after_limit() {
+    let temp = Temp::new();
+    temp.write("small.md", "needle\n");
+    let huge = temp.path().join("huge.md");
+    let huge_file = File::create(&huge).unwrap();
+    huge_file.set_len(300 * 1024 * 1024).unwrap();
+
+    let reads = std::sync::Arc::new(AtomicUsize::new(0));
+    let reads_for_search = reads.clone();
+    let options = ScanOptions {
+        max_file_bytes: 2 * 1024 * 1024,
+        concurrency: 1,
+        ..ScanOptions::default()
+    };
+    let result = search::scan_markdown(
+        temp.path(),
+        options,
+        Some(vec!["huge.md".into(), "small.md".into()]),
+        move |path, text, per_file| {
+            reads_for_search.fetch_add(1, Ordering::SeqCst);
+            search::search_text(path, text, "needle", per_file)
+        },
+    )
+    .await;
+    assert_eq!(result.results.len(), 1);
+    assert_eq!(result.results[0].path, "small.md");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "el archivo de 300 MB no debe leerse"
+    );
+
+    let reads = std::sync::Arc::new(AtomicUsize::new(0));
+    let reads_for_search = reads.clone();
+    let limited = search::scan_markdown(
+        temp.path(),
+        ScanOptions {
+            limit: 1,
+            concurrency: 1,
+            ..ScanOptions::default()
+        },
+        Some(vec!["first.md".into(), "second.md".into(), "third.md".into()]),
+        move |path, text, per_file| {
+            reads_for_search.fetch_add(1, Ordering::SeqCst);
+            search::search_text(path, text, "needle", per_file)
+        },
+    );
+    temp.write("first.md", "needle\nneedle\n");
+    temp.write("second.md", "needle\n");
+    temp.write("third.md", "needle\n");
+    let limited = limited.await;
+    assert_eq!(limited.results.len(), 1);
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "el límite debe detener el consumo del stream"
+    );
+}
+
+#[tokio::test]
 async fn backlinks_ignore_fences_and_deduplicate() {
     let temp = Temp::new();
     temp.write("inicio.md", "# Inicio\n");

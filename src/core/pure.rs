@@ -364,12 +364,11 @@ pub fn join_relative(base: &str, relative: &str) -> Option<String> {
     Some(stack.join("/"))
 }
 
-fn strip_md(path: &str) -> String {
-    let lower = path.to_lowercase();
-    if lower.ends_with(".md") {
-        path[..path.len() - 3].to_string()
+fn strip_md(path: &str) -> &str {
+    if is_markdown_path(path) {
+        &path[..path.len() - 3]
     } else {
-        path.to_string()
+        path
     }
 }
 
@@ -439,11 +438,12 @@ impl WikiIndex {
         }
         let candidates = self.by_name.get(last_segment(&name))?;
         let sibling = format!("{from_dir}{name}").to_lowercase();
+        let suffix = format!("/{name}");
         let mut best: Option<&WikiEntry> = None;
         let mut best_rank = (3usize, 3usize, usize::MAX);
         for entry in candidates {
             let exact = entry.key == name;
-            if !exact && (exact_only || !entry.key.ends_with(&format!("/{name}"))) {
+            if !exact && (exact_only || !entry.key.ends_with(&suffix)) {
                 continue;
             }
             let rank = (

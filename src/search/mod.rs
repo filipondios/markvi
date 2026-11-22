@@ -92,8 +92,22 @@ fn folded_query(query: &str, sensitive: bool) -> Vec<char> {
 }
 
 fn contains_ascii_ci(text: &str, query: &str) -> bool {
-    text.to_ascii_lowercase()
-        .contains(&query.to_ascii_lowercase())
+    if query.is_empty() {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let needle = query.as_bytes();
+    if needle.len() > bytes.len() {
+        return false;
+    }
+    let first = needle[0];
+    bytes.windows(needle.len()).any(|window| {
+        window[0].eq_ignore_ascii_case(&first)
+            && window
+                .iter()
+                .zip(needle)
+                .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+    })
 }
 
 /// Rangos UTF-16 de las coincidencias literales no solapadas de `query` en `line`.
@@ -105,6 +119,16 @@ fn literal_ranges(
 ) -> Vec<(usize, usize)> {
     if folded.is_empty() {
         return Vec::new();
+    }
+    // Prefiltro por línea: evita materializar caracteres y offsets si no hay match.
+    if sensitive {
+        if !line.contains(query) {
+            return Vec::new();
+        }
+    } else if query.is_ascii() {
+        if !contains_ascii_ci(line, query) {
+            return Vec::new();
+        }
     }
     // ASCII: byte offset == UTF-16 offset, sin char_indices ni Vec<char>.
     if line.is_ascii() && query.is_ascii() {
@@ -134,6 +158,12 @@ fn literal_ranges(
     }
 
     let chars: Vec<char> = line.chars().collect();
+    // Plegar una sola vez por línea, no en cada posición candidata.
+    let folded_line: Vec<char> = chars
+        .iter()
+        .copied()
+        .map(|character| if sensitive { character } else { fold(character) })
+        .collect();
     let mut offsets = Vec::with_capacity(chars.len() + 1);
     let mut cursor = 0;
     for c in &chars {
@@ -145,14 +175,7 @@ fn literal_ranges(
     let mut ranges = Vec::new();
     let mut at = 0;
     while at + folded.len() <= chars.len() {
-        let matches = folded.iter().enumerate().all(|(offset, expected)| {
-            let actual = chars[at + offset];
-            if sensitive {
-                actual == *expected
-            } else {
-                fold(actual) == *expected
-            }
-        });
+        let matches = &folded_line[at..at + folded.len()] == folded;
         if matches {
             ranges.push((offsets[at], offsets[at + folded.len()]));
             at += folded.len();
@@ -294,34 +317,49 @@ where
     let root = root.to_path_buf();
     let search_file = Arc::new(search_file);
 
-    let tasks = all_files.into_iter().enumerate().map(|(index, path)| {
+    let tasks = all_files.into_iter().map(|path| {
         let root = root.clone();
         let search_file = Arc::clone(&search_file);
         async move {
             let file = root.join(&path);
-            let found = match fs::read_lossy(&file).await {
-                Ok(text) if text.len() as u64 <= max_file_bytes => {
-                    tokio::task::spawn_blocking(move || search_file(&path, &text, per_file))
-                        .await
-                        .unwrap_or_else(|_| empty_hits())
+            // El metadata evita abrir/leer archivos obviamente demasiado grandes.
+            match tokio::fs::metadata(&file).await {
+                Ok(metadata) if metadata.len() <= max_file_bytes => {}
+                _ => return empty_hits(),
+            }
+            tokio::task::spawn_blocking(move || {
+                use std::io::Read;
+                let opened = std::fs::File::open(&file);
+                let mut handle = match opened {
+                    Ok(handle) => handle,
+                    Err(_) => return empty_hits(),
+                };
+                let mut bytes = Vec::new();
+                if handle
+                    .by_ref()
+                    .take(max_file_bytes.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .is_err()
+                    || bytes.len() as u64 > max_file_bytes
+                {
+                    return empty_hits();
                 }
-                _ => empty_hits(),
-            };
-            (index, found)
+                let text = String::from_utf8_lossy(&bytes);
+                search_file(&path, text.as_ref(), per_file)
+            })
+            .await
+            .unwrap_or_else(|_| empty_hits())
         }
     });
 
-    // buffer_unordered termina fuera de orden; reordenar por el índice original.
-    let mut found: Vec<(usize, FileHits)> = stream::iter(tasks)
-        .buffer_unordered(concurrency)
-        .collect()
-        .await;
-    found.sort_by_key(|(index, _)| *index);
-
+    // `buffered` conserva el orden de entrada; al alcanzar el límite se deja
+    // de consumir el stream y se cancelan las lecturas que aún estén pendientes.
+    let mut pending = stream::iter(tasks).buffered(concurrency);
     let mut results = Vec::new();
     let mut full = false;
     let mut capped = false;
-    for (_, entry) in found {
+    while let Some(entry) = pending.next().await {
+        capped |= entry.truncated;
         for hit in entry.hits {
             if results.len() >= limit {
                 full = true;
@@ -329,7 +367,6 @@ where
             }
             results.push(hit);
         }
-        capped |= entry.truncated;
         if full {
             break;
         }
@@ -376,7 +413,7 @@ pub enum LinkKind {
 }
 
 fn may_have_links(line: &str) -> bool {
-    line.contains("[[") || line.to_lowercase().contains(".md")
+    line.contains("[[") || contains_ascii_ci(line, ".md")
 }
 
 /// Sustituye por espacios el código en línea, conservando longitudes UTF-16.
@@ -420,6 +457,16 @@ fn mask_inline_code(line: &str) -> String {
 fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
     let mut out = Vec::new();
     let units: Vec<u16> = line.encode_utf16().collect();
+    // Para cada posición, índice del siguiente `]` o salto de línea. Se calcula
+    // en una pasada y evita volver a recorrer el sufijo por cada `[`.
+    let mut next_close = vec![units.len(); units.len() + 1];
+    let mut next = units.len();
+    for index in (0..units.len()).rev() {
+        if units[index] == b']' as u16 || units[index] == b'\n' as u16 {
+            next = index;
+        }
+        next_close[index] = next;
+    }
     let mut at = 0;
     while at < units.len() {
         if units[at] != b'[' as u16 {
@@ -431,17 +478,17 @@ fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
             at += 1;
             continue;
         }
-        let Some(close_bracket) = units[at + 1..]
-            .iter()
-            .position(|u| *u == b']' as u16 || *u == b'\n' as u16)
-            .map(|index| at + 1 + index)
-        else {
+        if at + 1 >= units.len() {
             break;
-        };
-        if units[close_bracket] != b']' as u16
-            || close_bracket + 1 >= units.len()
-            || units[close_bracket + 1] != b'(' as u16
-        {
+        }
+        let close_bracket = next_close[at + 1];
+        if close_bracket == units.len() {
+            break;
+        }
+        if units[close_bracket] != b']' as u16 {
+            break;
+        }
+        if close_bracket + 1 >= units.len() || units[close_bracket + 1] != b'(' as u16 {
             at += 1;
             continue;
         }
@@ -682,6 +729,18 @@ mod tests {
         assert!(
             std::mem::size_of::<super::FoundLink>() <= 64,
             "FoundLink sigue guardando una copia de la línea por enlace"
+        );
+    }
+
+    #[test]
+    fn markdown_links_lineal_en_corchetes_sin_destino() {
+        let line = format!("{}]", "[".repeat(100_000));
+        let start = std::time::Instant::now();
+        assert!(super::markdown_links(&line).is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(100),
+            "markdown_links tardó {:?} con 100k corchetes",
+            start.elapsed()
         );
     }
 }
