@@ -433,7 +433,6 @@
       "output": [
         {
           "line": 1,
-          "raw": "ver [[Nota]] y [texto](otra.md#sec) fin",
           "range": [
             4,
             12
@@ -443,7 +442,6 @@
         },
         {
           "line": 1,
-          "raw": "ver [[Nota]] y [texto](otra.md#sec) fin",
           "range": [
             15,
             35
@@ -462,7 +460,6 @@
       "output": [
         {
           "line": 5,
-          "raw": "[[Real]]",
           "range": [
             0,
             8
@@ -481,7 +478,6 @@
       "output": [
         {
           "line": 1,
-          "raw": "código `[[No]]` y [[Si]]",
           "range": [
             18,
             24
@@ -500,13 +496,66 @@
       "output": [
         {
           "line": 1,
-          "raw": "![img](a.md) y [[Real]]",
           "range": [
             15,
             23
           ],
           "kind": "wiki",
           "target": "Real"
+        }
+      ]
+    },
+    {
+      "id": "extract-inline-triple-backticks",
+      "fn": "extractLinks",
+      "args": [
+        "```inline``` texto [[t]]"
+      ],
+      "output": [
+        {
+          "line": 1,
+          "range": [
+            19,
+            24
+          ],
+          "kind": "wiki",
+          "target": "t"
+        }
+      ]
+    },
+    {
+      "id": "extract-mixed-fence-does-not-open",
+      "fn": "extractLinks",
+      "args": [
+        "`~`~ x\n[[t]]"
+      ],
+      "output": [
+        {
+          "line": 2,
+          "range": [
+            0,
+            5
+          ],
+          "kind": "wiki",
+          "target": "t"
+        }
+      ]
+    },
+    {
+      "id": "extract-real-fence-hides-links",
+      "fn": "extractLinks",
+      "args": [
+        "```\n[[hidden]]\n```\n[[visible]]"
+      ],
+      "output": [
+        {
+          "line": 4,
+          "range": [
+            0,
+            11
+          ],
+          "kind": "wiki",
+          "target": "visible"
         }
       ]
     },
@@ -519,7 +568,6 @@
       "output": [
         {
           "line": 3,
-          "raw": "[[X]]",
           "range": [
             0,
             5

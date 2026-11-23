@@ -25,14 +25,16 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
-async fn shutdown(watcher: std::sync::Arc<tokio::sync::Mutex<FileWatcher>>) {
-    watch::shutdown_signal().await;
-    watcher.lock().await.close();
+async fn shutdown(mut watcher: FileWatcher, signal: impl std::future::Future<Output = ()>) {
+    signal.await;
+    watcher.close();
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    // Antes de abrir el puerto: una señal temprana debe apagar de forma ordenada.
+    let signal = watch::install_shutdown_signals();
     let metadata = match tokio::fs::metadata(&args.directory).await {
         Ok(metadata) => metadata,
         Err(_) => fail(&format!(
@@ -52,18 +54,18 @@ async fn main() {
     };
 
     let env: Vec<(String, String)> = std::env::vars().collect();
-    let config_path =
-        config::resolve_config_path(args.config.as_ref().and_then(|path| path.to_str()), &env);
+    let config_path = config::resolve_config_path(args.config.as_deref(), &env);
 
     let watcher = FileWatcher::new(&root);
+    let sse = watcher.hub();
     let state = api::AppState::new(
         root.clone(),
         args.port,
         config_path.clone(),
-        watcher,
+        sse,
         api::StaticAssets::new(),
     );
-    let shutdown_watcher = state.watcher_handle();
+    let shutdown_watcher = watcher;
     let app: Router = api::router(state);
 
     let addr: SocketAddr = api::bind_addr(args.port);
@@ -81,7 +83,11 @@ async fn main() {
     let loaded = config::load_config(&config_path).await;
     println!(
         "config: {}{}",
-        config_path.display(),
+        if config_path.as_os_str().is_empty() {
+            "(none)".into()
+        } else {
+            config_path.display().to_string()
+        },
         if loaded.exists {
             ""
         } else {
@@ -93,7 +99,7 @@ async fn main() {
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown(shutdown_watcher))
+        .with_graceful_shutdown(shutdown(shutdown_watcher, signal))
         .await
         .expect("server failed");
 }

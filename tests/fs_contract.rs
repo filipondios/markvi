@@ -289,6 +289,19 @@ async fn exclusive_create_and_lock_queue() {
 }
 
 #[test]
+fn config_warnings_son_legibles() {
+    let text = "theme = 'neon'\n[keymap.leader]\nf = 'bogus'\n[keymap.view]\nJ = 5\n";
+    let (_, warnings) = config::parse_config(Some(text));
+    let joined = warnings.join(" | ");
+    assert!(joined.contains("\"neon\""), "{joined}");
+    assert!(joined.contains("\"bogus\""), "{joined}");
+    assert!(joined.contains("5"), "{joined}");
+    assert!(!joined.contains("String("), "{joined}");
+    assert!(!joined.contains("Some("), "{joined}");
+    assert!(!joined.contains("Integer("), "{joined}");
+}
+
+#[test]
 fn config_defaults_validation_and_path_precedence() {
     let (config, warnings) = config::parse_config(None);
     assert_eq!(config, pure::default_config());
@@ -335,17 +348,102 @@ fn config_defaults_validation_and_path_precedence() {
         PathBuf::from("/home/u/.config/markvi/config.toml")
     );
     assert_eq!(
-        config::resolve_config_path(Some("/tmp/x.toml"), &env),
+        config::resolve_config_path(Some(Path::new("/tmp/x.toml")), &env),
         PathBuf::from("/tmp/x.toml")
     );
     assert_eq!(
-        config::resolve_config_path(Some(""), &env),
+        config::resolve_config_path(Some(Path::new("")), &env),
         PathBuf::from("/home/u/.config/markvi/config.toml")
     );
 }
 
+fn euid() -> Option<u32> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("Uid:"))?
+        .split_whitespace()
+        .nth(2)?
+        .parse()
+        .ok()
+}
+
+#[tokio::test]
+async fn config_sin_home_no_carga_nada_ni_toca_tmp() {
+    let path = config::resolve_config_path_with_home(None, &[], None);
+    assert!(path.as_os_str().is_empty(), "{}", path.display());
+    let loaded = config::load_config(&path).await;
+    assert!(!loaded.exists);
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.warnings[0].contains("HOME"), "{:?}", loaded.warnings);
+
+    // Con HOME o con el home del sistema sigue resolviéndose bajo ~/.config.
+    let env = vec![("HOME".to_string(), "/home/u".to_string())];
+    assert_eq!(
+        config::resolve_config_path_with_home(None, &env, None),
+        PathBuf::from("/home/u/.config/markvi/config.toml")
+    );
+    assert_eq!(
+        config::resolve_config_path_with_home(None, &[], Some(PathBuf::from("/h"))),
+        PathBuf::from("/h/.config/markvi/config.toml")
+    );
+}
+
+#[test]
+fn toml_roto_informa_linea_y_columna() {
+    let (_, warnings) = config::parse_config(Some("theme = 'dark'\n\nfoo = = 3\n"));
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].starts_with("Syntax error at line 3, col"),
+        "{warnings:?}"
+    );
+}
+
+#[tokio::test]
+async fn config_de_mas_de_1_mib_se_ignora_con_aviso() {
+    let temp = Temp::new();
+    let big = temp.write("grande.toml", &format!("# {}\n", "x".repeat(1024 * 1024)));
+    let loaded = config::load_config(&big).await;
+    assert!(loaded.exists);
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(
+        loaded.warnings[0].contains("1 MiB"),
+        "{:?}",
+        loaded.warnings
+    );
+
+    let ok = temp.write("ok.toml", "theme = 'dark'\n");
+    let loaded = config::load_config(&ok).await;
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(loaded.config.theme, pure::Theme::Dark);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn config_con_nombre_no_utf8_se_carga() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let temp = Temp::new();
+    let name = std::ffi::OsString::from_vec(b"cfg\xff.toml".to_vec());
+    let path = temp.path().join(name);
+    std::fs::write(&path, "theme = 'dark'\n").unwrap();
+
+    let env: Vec<(String, String)> = Vec::new();
+    assert_eq!(
+        config::resolve_config_path(Some(path.as_path()), &env),
+        path
+    );
+    let loaded = config::load_config(&path).await;
+    assert!(loaded.exists);
+    assert_eq!(loaded.config.theme, pure::Theme::Dark);
+}
+
 #[tokio::test]
 async fn unreadable_config_is_not_reported_as_missing() {
+    // root puede leer archivos con modo 000.
+    if euid() == Some(0) {
+        return;
+    }
     let temp = Temp::new();
     let missing = config::load_config(&temp.path().join("no.toml")).await;
     assert!(!missing.exists);

@@ -1,4 +1,4 @@
-//! Validación de `config.toml`, espejo de `src/config.ts`. Nunca lanza:
+//! Validación de `config.toml`. Nunca lanza:
 //! lo inválido se ignora y se convierte en aviso observable en `/api/config`.
 
 use crate::core::pure::{self, Config, LeaderBinding, Theme, VimContext, VimMapping};
@@ -13,26 +13,47 @@ pub struct LoadedConfig {
     pub exists: bool,
 }
 
-pub fn resolve_config_path(flag: Option<&str>, env: &[(String, String)]) -> PathBuf {
+/// Límite de lectura del archivo de configuración.
+pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// Ruta de la configuración. Vacía si no se puede localizar ningún directorio
+/// personal: en ese caso no se carga configuración (ver `load_config`).
+pub fn resolve_config_path(flag: Option<&Path>, env: &[(String, String)]) -> PathBuf {
+    #[allow(deprecated)]
+    resolve_config_path_with_home(flag, env, std::env::home_dir())
+}
+
+/// Como `resolve_config_path`, con el directorio personal del sistema inyectado.
+pub fn resolve_config_path_with_home(
+    flag: Option<&Path>,
+    env: &[(String, String)],
+    system_home: Option<PathBuf>,
+) -> PathBuf {
     let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
-    if let Some(flag) = flag.filter(|value| !value.is_empty()) {
+    if let Some(flag) = flag.filter(|value| !value.as_os_str().is_empty()) {
         return absolute_or_join(flag);
     }
     if let Some(path) = get("MARKVI_CONFIG").filter(|value| !value.is_empty()) {
-        return absolute_or_join(&path);
+        return absolute_or_join(Path::new(&path));
     }
     let base = match get("XDG_CONFIG_HOME") {
         Some(home) if Path::new(&home).is_absolute() => PathBuf::from(home),
         _ => {
-            let home = get("HOME").unwrap_or_else(|| ".".to_string());
-            Path::new(&home).join(".config")
+            let Some(home) = get("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or(system_home)
+            else {
+                return PathBuf::new();
+            };
+            home.join(".config")
         }
     };
     base.join("markvi").join("config.toml")
 }
 
-fn absolute_or_join(path: &str) -> PathBuf {
-    let given = Path::new(path);
+fn absolute_or_join(path: &Path) -> PathBuf {
+    let given = path;
     if given.is_absolute() {
         given.to_path_buf()
     } else {
@@ -48,7 +69,7 @@ fn is_js_space(c: char) -> bool {
 }
 
 fn parse_key(token: &str) -> Option<String> {
-    if token.to_lowercase() == "space" {
+    if token.eq_ignore_ascii_case("space") {
         return Some(" ".to_string());
     }
     let chars: Vec<char> = token.chars().collect();
@@ -122,6 +143,18 @@ fn table(value: &toml::Value) -> Option<&toml::Table> {
     value.as_table()
 }
 
+/// `Display` de `toml::Value` ya da el literal TOML (`"neon"`, `5`).
+fn show(value: &toml::Value) -> String {
+    value.to_string()
+}
+
+fn show_action(action: Option<&str>, raw: &toml::Value) -> String {
+    match action {
+        Some(value) => format!("\"{value}\""),
+        None => show(raw),
+    }
+}
+
 fn warn_unknown(warnings: &mut Vec<String>, prefix: &str, table: &toml::Table, known: &[&str]) {
     for key in table.keys() {
         if !known.contains(&key.as_str()) {
@@ -173,7 +206,8 @@ fn apply_leader(config: &mut Config, value: Option<&toml::Value>, warnings: &mut
         });
         if !valid {
             warnings.push(format!(
-                "keymap.leader.{sequence}: unknown action {action:?}. Use find, grep, recent, alternate, toc, backlinks, close, \"none\" or an ex command such as \":e diary.md\"."
+                "keymap.leader.{sequence}: unknown action {}. Use find, grep, recent, alternate, toc, backlinks, close, \"none\" or an ex command such as \":e diary.md\".",
+                show_action(action, raw)
             ));
             continue;
         }
@@ -226,14 +260,13 @@ fn apply_view_remap(config: &mut Config, value: Option<&toml::Value>, warnings: 
             || target.as_deref() == Some(" ")
         {
             warnings.push(format!(
-                "keymap.view: {from:?} = {raw:?} must map one key to another key."
+                "keymap.view: {from:?} = {} must map one key to another key.",
+                show(raw)
             ));
             continue;
         }
         if source != target {
-            config
-                .view_remap
-                .insert(source.unwrap(), serde_json::json!(target.unwrap()));
+            config.view_remap.insert(source.unwrap(), target.unwrap());
         }
     }
 }
@@ -259,7 +292,8 @@ fn apply_vim(
             || rhs.is_none_or(|rhs| rhs.is_empty() || rhs.encode_utf16().count() > 64)
         {
             warnings.push(format!(
-                "keymap.{name}: {lhs:?} = {raw:?} is not a valid mapping."
+                "keymap.{name}: {lhs:?} = {} is not a valid mapping.",
+                show(raw)
             ));
             continue;
         }
@@ -289,7 +323,8 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
         });
         match key.filter(|_| !letter_or_digit) {
             None => warnings.push(format!(
-                "\"leader\" must be \"space\" or a single symbol such as \",\" (got {value:?})."
+                "\"leader\" must be \"space\" or a single symbol such as \",\" (got {}).",
+                show(value)
             )),
             Some(key) => config.leader = key,
         }
@@ -300,7 +335,8 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
             Some("light") => config.theme = Theme::Light,
             Some("dark") => config.theme = Theme::Dark,
             _ => warnings.push(format!(
-                "\"theme\" must be \"auto\", \"light\" or \"dark\" (got {value:?})."
+                "\"theme\" must be \"auto\", \"light\" or \"dark\" (got {}).",
+                show(value)
             )),
         }
     }
@@ -403,6 +439,22 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
     (config, warnings)
 }
 
+/// Línea y columna (desde 1, en caracteres) de un desplazamiento en bytes.
+fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut end = offset.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let before = &text[..end];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .map_or(0, |last| last.chars().count())
+        + 1;
+    (line, column)
+}
+
 pub fn parse_config(text: Option<&str>) -> (Config, Vec<String>) {
     let Some(text) = text else {
         return (pure::default_config(), Vec::new());
@@ -414,13 +466,44 @@ pub fn parse_config(text: Option<&str>) -> (Config, Vec<String>) {
         Ok(raw) => validate_config(&raw),
         Err(error) => (
             pure::default_config(),
-            vec![format!("Syntax error: {}", error.message())],
+            vec![match error.span() {
+                Some(span) => {
+                    let (line, column) = line_column(text, span.start);
+                    format!(
+                        "Syntax error at line {line}, col {column}: {}",
+                        error.message()
+                    )
+                }
+                None => format!("Syntax error: {}", error.message()),
+            }],
         ),
     }
 }
 
+/// Lee como mucho `MAX_CONFIG_BYTES + 1` bytes: basta para saber si se pasa del tope.
+async fn read_limited(path: &Path) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    Ok(bytes)
+}
+
 pub async fn load_config(path: &Path) -> LoadedConfig {
     let path_string = path.to_string_lossy().into_owned();
+    if path.as_os_str().is_empty() {
+        return LoadedConfig {
+            config: pure::default_config(),
+            warnings: vec![
+                "HOME and XDG_CONFIG_HOME are not set; no config file was loaded (use --config)."
+                    .to_string(),
+            ],
+            path: path_string,
+            exists: false,
+        };
+    }
     // Distinguir "no existe" de "existe pero no se puede leer" es observable.
     let exists = tokio::fs::try_exists(path).await.unwrap_or(true);
     if !exists {
@@ -431,7 +514,15 @@ pub async fn load_config(path: &Path) -> LoadedConfig {
             exists: false,
         };
     }
-    let bytes = match tokio::fs::read(path).await {
+    let bytes = match read_limited(path).await {
+        Ok(bytes) if bytes.len() as u64 > MAX_CONFIG_BYTES => {
+            return LoadedConfig {
+                config: pure::default_config(),
+                warnings: vec!["The config file is larger than 1 MiB; ignored.".to_string()],
+                path: path_string,
+                exists: true,
+            }
+        }
         Ok(bytes) => bytes,
         Err(error) => {
             return LoadedConfig {

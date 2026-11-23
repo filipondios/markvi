@@ -1,11 +1,10 @@
 //! Núcleo puro del servidor: rutas, wiki y valores por defecto.
 //! Sin Node, Bun ni DOM. Las firmas y el orden de campos siguen a los tests de `src/`.
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
 
 pub const HOSTNAME: &str = "127.0.0.1";
-pub const SERVER_IDLE_TIMEOUT_S: u64 = 60;
 pub const SSE_HEARTBEAT_MS: u64 = 25_000;
 
 pub const VIEW_PREFIX: &str = "/view/";
@@ -22,6 +21,32 @@ pub fn is_case_sensitive(query: &str) -> bool {
     query != query.to_lowercase()
 }
 
+pub(crate) fn utf16_len(text: &str) -> usize {
+    text.chars().map(|c| c.len_utf16()).sum()
+}
+
+/// Decodificación estricta de `%XX`; `None` si hay un escape inválido.
+pub(crate) fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let pair = value.get(index + 1..index + 3)?;
+            if !pair.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            let byte = u8::from_str_radix(pair, 16).ok()?;
+            out.push(byte);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 pub fn normalize_path(path: &str) -> String {
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("./").unwrap_or(&path);
@@ -29,7 +54,10 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 pub fn is_markdown_path(path: &str) -> bool {
-    path.to_lowercase().ends_with(".md")
+    path.len() >= 3
+        && path
+            .get(path.len() - 3..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(".md"))
 }
 
 pub fn is_safe_path(path: &str) -> bool {
@@ -51,7 +79,10 @@ pub fn encode_uri_component(value: &str) -> String {
         if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(byte) {
             out.push(*byte as char);
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
         }
     }
     out
@@ -151,7 +182,7 @@ pub struct Config {
     #[serde(rename = "leaderBindings")]
     pub leader_bindings: Vec<LeaderBinding>,
     #[serde(rename = "viewRemap")]
-    pub view_remap: Map<String, serde_json::Value>,
+    pub view_remap: IndexMap<String, String>,
     #[serde(rename = "vimMappings")]
     pub vim_mappings: Vec<VimMapping>,
     pub render: RenderExtras,
@@ -159,13 +190,13 @@ pub struct Config {
 
 pub fn default_config() -> Config {
     let actions = [
-        "find",
-        "grep",
-        "recent",
-        "alternate",
-        "toc",
-        "backlinks",
-        "close",
+        ("f", "find"),
+        ("/", "grep"),
+        ("r", "recent"),
+        ("a", "alternate"),
+        ("t", "toc"),
+        ("b", "backlinks"),
+        ("x", "close"),
     ];
     Config {
         leader: " ".to_string(),
@@ -178,22 +209,12 @@ pub fn default_config() -> Config {
         },
         leader_bindings: actions
             .iter()
-            .map(|action| LeaderBinding {
-                keys: vec![match *action {
-                    "find" => "f",
-                    "grep" => "/",
-                    "recent" => "r",
-                    "alternate" => "a",
-                    "toc" => "t",
-                    "backlinks" => "b",
-                    "close" => "x",
-                    _ => unreachable!(),
-                }
-                .to_string()],
+            .map(|(key, action)| LeaderBinding {
+                keys: vec![(*key).to_string()],
                 action: (*action).to_string(),
             })
             .collect(),
-        view_remap: Map::new(),
+        view_remap: IndexMap::new(),
         vim_mappings: Vec::new(),
         render: RenderExtras {
             footnotes: true,
@@ -251,31 +272,55 @@ pub fn parse_wiki_link(inner: &str) -> Option<WikiRef> {
     }
 }
 
-/// Todas las coincidencias `[[...]]` de un texto, con sus índices UTF-16.
-pub fn wiki_links(text: &str) -> Vec<(usize, String)> {
+/// Todas las coincidencias `[[...]]` de un texto: (offset UTF-16, texto, referencia).
+/// Escanea solo hasta el primer `[`, `]` o `\n` tras `[[`, así que es lineal.
+pub fn wiki_links(text: &str) -> Vec<(usize, String, WikiRef)> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(relative) = text[i + 2..].find("]]") {
-                let end = i + 2 + relative;
-                let inner = &text[i + 2..end];
-                if !inner.contains('\n') && parse_wiki_link(inner).is_some() {
-                    let full = &text[i..end + 2];
-                    out.push((utf16_len(&text[..i]), full.to_string()));
-                    i = end + 2;
-                    continue;
+    let mut utf16 = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && bytes.get(i + 1) == Some(&b'[') {
+            let mut j = i + 2;
+            let mut inner_utf16 = 0usize;
+            let mut close = None;
+            while j < bytes.len() {
+                let c = text[j..].chars().next().expect("índice de byte válido");
+                match c {
+                    ']' => {
+                        if bytes.get(j + 1) == Some(&b']') {
+                            close = Some(j);
+                        }
+                        break;
+                    }
+                    '[' | '\n' => break,
+                    _ => {
+                        inner_utf16 += c.len_utf16();
+                        j += c.len_utf8();
+                    }
                 }
             }
+            if let Some(j) = close {
+                let inner = &text[i + 2..j];
+                if let Some(ref_) = parse_wiki_link(inner) {
+                    out.push((utf16, text[i..j + 2].to_string(), ref_));
+                }
+                utf16 += 4 + inner_utf16;
+                i = j + 2;
+                continue;
+            }
+            // Candidato fallido: saltar directamente al carácter prohibido.
+            if j > i + 2 {
+                utf16 += 2 + inner_utf16;
+                i = j;
+                continue;
+            }
         }
-        i += 1;
+        let c = text[i..].chars().next().expect("índice de byte válido");
+        utf16 += c.len_utf16();
+        i += c.len_utf8();
     }
     out
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.chars().map(|c| c.len_utf16()).sum()
 }
 
 pub fn wiki_label(ref_: &WikiRef) -> String {
@@ -319,12 +364,11 @@ pub fn join_relative(base: &str, relative: &str) -> Option<String> {
     Some(stack.join("/"))
 }
 
-fn strip_md(path: &str) -> String {
-    let lower = path.to_lowercase();
-    if lower.ends_with(".md") {
-        path[..path.len() - 3].to_string()
+fn strip_md(path: &str) -> &str {
+    if is_markdown_path(path) {
+        &path[..path.len() - 3]
     } else {
-        path.to_string()
+        path
     }
 }
 
@@ -394,11 +438,12 @@ impl WikiIndex {
         }
         let candidates = self.by_name.get(last_segment(&name))?;
         let sibling = format!("{from_dir}{name}").to_lowercase();
+        let suffix = format!("/{name}");
         let mut best: Option<&WikiEntry> = None;
         let mut best_rank = (3usize, 3usize, usize::MAX);
         for entry in candidates {
             let exact = entry.key == name;
-            if !exact && (exact_only || !entry.key.ends_with(&format!("/{name}"))) {
+            if !exact && (exact_only || !entry.key.ends_with(&suffix)) {
                 continue;
             }
             let rank = (

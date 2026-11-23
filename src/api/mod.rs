@@ -6,12 +6,13 @@ use crate::{
     core::{hash, pure},
     fs::{self, HttpError, Locks},
     search,
-    watch::FileWatcher,
+    watch::SseHub,
 };
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
     http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response, Sse},
 };
 use serde_json::{json, Value};
@@ -22,10 +23,12 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 const NO_STORE: &str = "no-store";
 const MAX_QUERY: usize = 200;
+const MAX_BODY: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
@@ -111,6 +114,30 @@ fn text_response(
     builder.body(Body::from(body)).expect("valid response")
 }
 
+/// Comparación débil (RFC 9110 §13.1.2) de `If-None-Match` con un etag; admite lista y `*`.
+fn etag_matches(header: &str, etag: &str) -> bool {
+    let strip = |tag: &str| tag.trim().trim_start_matches("W/").to_string();
+    let wanted = strip(etag);
+    header
+        .split(',')
+        .any(|candidate| candidate.trim() == "*" || strip(candidate) == wanted)
+}
+
+fn not_modified(etag: &str, cache_control: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_MODIFIED)
+        .header("cache-control", cache_control)
+        .header("etag", etag)
+        .body(Body::empty())
+        .expect("valid response")
+}
+
+fn if_none_match(req: &Request) -> Option<&str> {
+    req.headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+}
+
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/frontend_assets.rs"));
 }
@@ -161,6 +188,26 @@ impl StaticAssets {
         }
     }
 
+    /// `index_response` o 304 si `If-None-Match` coincide con su etag.
+    fn index_conditional(&self, if_none_match: Option<&str>) -> Response {
+        if let (Some(etag), Some(header)) = (&self.index_etag, if_none_match) {
+            if etag_matches(header, etag) {
+                return not_modified(etag, "no-cache");
+            }
+        }
+        self.index_response()
+    }
+
+    fn asset_conditional(&self, path: &str, if_none_match: Option<&str>) -> Option<Response> {
+        let (_, _, cache_control, etag) = self.files.get(path)?;
+        if let (Some(etag), Some(header)) = (etag, if_none_match) {
+            if etag_matches(header, etag) {
+                return Some(not_modified(etag, cache_control));
+            }
+        }
+        self.asset_response(path)
+    }
+
     fn index_response(&self) -> Response {
         let mut builder = Response::builder()
             .status(StatusCode::OK)
@@ -207,7 +254,7 @@ pub struct AppState {
     pub port: u16,
     pub config_path: Arc<PathBuf>,
     pub locks: Arc<Locks>,
-    pub watcher: Arc<Mutex<FileWatcher>>,
+    pub sse: Arc<SseHub>,
     pub assets: Arc<StaticAssets>,
     hosts: Arc<Vec<String>>,
     origins: Arc<Vec<String>>,
@@ -218,7 +265,7 @@ impl AppState {
         root: PathBuf,
         port: u16,
         config_path: PathBuf,
-        watcher: FileWatcher,
+        sse: Arc<SseHub>,
         assets: StaticAssets,
     ) -> Self {
         let suffix = if port == 80 {
@@ -239,15 +286,11 @@ impl AppState {
             port,
             config_path: Arc::new(config_path),
             locks: Arc::new(Locks::default()),
-            watcher: Arc::new(Mutex::new(watcher)),
+            sse,
             assets: Arc::new(assets),
             hosts: Arc::new(hosts),
             origins: Arc::new(origins),
         }
-    }
-
-    pub fn watcher_handle(&self) -> Arc<Mutex<FileWatcher>> {
-        self.watcher.clone()
     }
 
     fn guard(&self, req: &Request) -> Result<(), ApiError> {
@@ -274,20 +317,32 @@ impl AppState {
     }
 }
 
+/// Decodifica un componente `application/x-www-form-urlencoded`: primero `+` → espacio
+/// sobre el texto crudo y después `%XX` (así `%2B` sigue siendo `+`).
+fn decode_form(raw: &str) -> Option<String> {
+    pure::percent_decode(&raw.replace('+', " "))
+}
+
 fn query_param(req: &Request, key: &str) -> Option<String> {
     let query = req.uri().query()?;
     for pair in query.split('&') {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let decoded_name = percent_decode(name).ok()?.replace('+', " ");
-        if decoded_name == key {
-            return Some(percent_decode(value).ok()?.replace('+', " "));
+        // Un nombre mal codificado no puede ser el buscado: se ignora sin afectar al resto.
+        if decode_form(name).is_some_and(|decoded| decoded == key) {
+            return decode_form(value);
         }
     }
     None
 }
 
+fn too_large() -> ApiError {
+    ApiError::new(413, "Payload too large.")
+}
+
 async fn body_string(req: Request) -> Result<String, ApiError> {
-    let bytes = to_bytes(req.into_body(), usize::MAX).await?;
+    let bytes = to_bytes(req.into_body(), MAX_BODY)
+        .await
+        .map_err(|_| too_large())?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -299,23 +354,24 @@ async fn markdown_file(state: &AppState, path: Option<String>) -> Result<PathBuf
     Ok(file)
 }
 
-async fn body_json(req: Request) -> Value {
-    let bytes = to_bytes(req.into_body(), usize::MAX)
+async fn body_json(req: Request) -> Result<Value, ApiError> {
+    let bytes = to_bytes(req.into_body(), MAX_BODY)
         .await
-        .unwrap_or_default();
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        .map_err(|_| too_large())?;
+    Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
 // ---- handlers -------------------------------------------------------------
 
-pub async fn tree_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
+pub async fn tree_get(State(state): State<AppState>, _req: Request) -> Result<Response, ApiError> {
     let files = fs::list_markdown(&state.root).await;
     Ok(json_response(200, json!({ "files": files }), NO_STORE))
 }
 
-pub async fn config_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
+pub async fn config_get(
+    State(state): State<AppState>,
+    _req: Request,
+) -> Result<Response, ApiError> {
     let loaded: LoadedConfig = config::load_config(&state.config_path).await;
     Ok(json_response(
         200,
@@ -325,7 +381,6 @@ pub async fn config_get(State(state): State<AppState>, req: Request) -> Result<R
 }
 
 pub async fn search_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let query = query_param(&req, "q").unwrap_or_default();
     let query = query.trim();
     if query.chars().count() > MAX_QUERY {
@@ -343,7 +398,6 @@ pub async fn backlinks_get(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     markdown_file(&state, query_param(&req, "path")).await?;
     let path = query_param(&req, "path").unwrap_or_default();
     let target = search::posix_normalize(&pure::normalize_path(&path));
@@ -357,20 +411,24 @@ pub async fn backlinks_get(
 }
 
 pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let file = markdown_file(&state, query_param(&req, "path")).await?;
-    let content = String::from_utf8_lossy(&tokio::fs::read(&file).await?).into_owned();
+    let (content, lossy) = fs::read_text(&file).await?;
+    let etag = hash::etag(&content);
+    let extra: &[(&str, &str)] = if lossy {
+        &[("x-markvi-lossy", "1")]
+    } else {
+        &[]
+    };
     Ok(text_response(
         200,
         "text/plain; charset=utf-8",
-        content.clone(),
-        Some(hash::etag(&content)),
-        &[],
+        content,
+        Some(etag),
+        extra,
     ))
 }
 
 pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let create = query_param(&req, "create").as_deref() == Some("1");
     let file = if create {
         let file = fs::resolve_writable(&state.root, query_param(&req, "path").as_deref()).await?;
@@ -382,37 +440,64 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
         markdown_file(&state, query_param(&req, "path")).await?
     };
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
+    let force = query_param(&req, "force").as_deref() == Some("1");
     let body = body_string(req).await?;
 
-    let result = fs::with_file_lock(&state.locks, &file.to_string_lossy(), async {
-        if let Some(if_match) = if_match {
-            let current = match tokio::fs::read_to_string(&file).await {
-                Ok(text) => text,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(ApiError::new(404, "File not found."));
+    let locks = state.locks.clone();
+    let response_etag = hash::etag(&body);
+    let result = tokio::spawn(async move {
+        let key = fs::lock_key(&file).await;
+        fs::with_file_lock(&locks, &key, async move {
+            if let Some(if_match) = if_match {
+                let current = match fs::read_lossy(&file).await {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(ApiError::new(404, "File not found."));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let etag = hash::etag(&current);
+                if if_match != "*" && if_match != etag {
+                    return Ok(Some(json_response(
+                        409,
+                        json!({ "error": "The file changed on disk.", "etag": etag }),
+                        NO_STORE,
+                    )));
                 }
-                Err(error) => return Err(error.into()),
-            };
-            let etag = hash::etag(&current);
-            if if_match != "*" && if_match != etag {
+            } else if create {
+                // `create=1` solo crea: sin `If-Match` no pisa un archivo que ya existe.
+                if tokio::fs::symlink_metadata(&file).await.is_ok() {
+                    return Err(ApiError::new(
+                        409,
+                        "A file or folder already exists at that path.",
+                    ));
+                }
+            } else if tokio::fs::metadata(&file).await.is_err() {
+                return Err(ApiError::new(404, "File not found."));
+            }
+            if !force && matches!(fs::is_valid_utf8(&file).await, Ok(false)) {
                 return Ok(Some(json_response(
                     409,
-                    json!({ "error": "The file changed on disk.", "etag": etag }),
+                    json!({
+                        "error": "The file is not valid UTF-8; saving would alter it.",
+                        "code": "not-utf8"
+                    }),
                     NO_STORE,
                 )));
             }
-        } else if !create && tokio::fs::metadata(&file).await.is_err() {
-            return Err(ApiError::new(404, "File not found."));
-        }
-        fs::write_file_atomic(&file, &body).await?;
-        Ok(None)
+            fs::spawn_write(file, body, false)
+                .await
+                .map_err(|_| ApiError::new(500, "Internal error."))??;
+            Ok(None)
+        })
+        .await
     })
-    .await?;
-    Ok(result.unwrap_or_else(|| empty_response(204, Some(hash::etag(&body)))))
+    .await
+    .map_err(|_| ApiError::new(500, "Internal error."))??;
+    Ok(result.unwrap_or_else(|| empty_response(204, Some(response_etag))))
 }
 
 pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let path = query_param(&req, "path");
     let path = path.as_deref().unwrap_or("");
     if path.is_empty() || !pure::is_markdown_path(path) {
@@ -420,31 +505,44 @@ pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Re
     }
     let file = fs::resolve_new(&state.root, Some(path)).await?;
     let body = body_string(req).await?;
-    if let Some(parent) = file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    fs::with_file_lock(&state.locks, &file.to_string_lossy(), async {
-        fs::create_file_exclusive(&file, &body).await?;
-        Ok(empty_response(201, Some(hash::etag(&body))))
+    let locks = state.locks.clone();
+    tokio::spawn(async move {
+        let key = fs::lock_key(&file).await;
+        fs::with_file_lock(&locks, &key, async move {
+            // Los directorios padre se crean bajo el candado y justo antes de escribir;
+            // si la escritura falla, se retiran los que se crearon.
+            let created = create_parents(&file).await?;
+            let etag = hash::etag(&body);
+            let written = match fs::spawn_write(file, body, true).await {
+                Ok(result) => result.map_err(ApiError::from),
+                Err(_) => Err(ApiError::new(500, "Internal error.")),
+            };
+            if let Err(error) = written {
+                remove_created(&created).await;
+                return Err(error);
+            }
+            Ok(empty_response(201, Some(etag)))
+        })
+        .await
     })
     .await
+    .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
 pub async fn file_delete(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let (real, entry) =
         fs::resolve_entry(&state.root, query_param(&req, "path").as_deref()).await?;
     if !pure::is_markdown_path(&real.to_string_lossy()) {
         return Err(ApiError::new(400, "Only .md files are supported."));
     }
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
-    fs::with_file_lock(&state.locks, &real.to_string_lossy(), async {
+    fs::with_file_lock(&state.locks, &fs::lock_key(&real).await, async {
         if let Some(if_match) = if_match {
             if if_match != "*" {
-                let content = tokio::fs::read_to_string(&real).await?;
+                let content = fs::read_lossy(&real).await?;
                 let etag = hash::etag(&content);
                 if if_match != etag {
                     return Ok(json_response(
@@ -461,9 +559,117 @@ pub async fn file_delete(
     .await
 }
 
+/// Crea los directorios padre de `file` que falten y devuelve los creados
+/// (del más externo al más interno).
+async fn create_parents(file: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let Some(parent) = file.parent() else {
+        return Ok(Vec::new());
+    };
+    let mut missing = Vec::new();
+    let mut current = parent;
+    while tokio::fs::symlink_metadata(current).await.is_err() {
+        missing.push(current.to_path_buf());
+        match current.parent() {
+            Some(next) => current = next,
+            None => break,
+        }
+    }
+    missing.reverse();
+    if let Err(error) = tokio::fs::create_dir_all(parent).await {
+        remove_created(&missing).await;
+        return Err(error);
+    }
+    Ok(missing)
+}
+
+/// Retira, del más interno al más externo, los directorios creados por `create_parents`.
+/// `remove_dir` solo borra directorios vacíos, así que nunca toca contenido ajeno.
+async fn remove_created(created: &[PathBuf]) {
+    for dir in created.iter().rev() {
+        let _ = tokio::fs::remove_dir(dir).await;
+    }
+}
+
+/// `move_into` creando antes los padres del destino; si falla, no deja directorios vacíos.
+async fn move_with_parents(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
+    let created = create_parents(target).await?;
+    let result = move_into(real, entry, target).await;
+    if result.is_err() {
+        remove_created(&created).await;
+    }
+    result
+}
+
+/// Mueve `entry` a `target` con el candado ya tomado. `real` es el destino del
+/// enlace cuando `entry` es un symlink (solo Unix).
+async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
+    // `resolve_new` ocurrió antes del candado: el destino puede haberse creado.
+    match tokio::fs::symlink_metadata(target).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+        Ok(_) => {
+            return Err(ApiError::new(
+                409,
+                "A file or folder already exists at that path.",
+            ))
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let metadata = tokio::fs::symlink_metadata(entry).await?;
+        if metadata.file_type().is_symlink() {
+            // El padre puede ser a su vez un enlace: el relativo se calcula desde su ruta real.
+            let parent = tokio::fs::canonicalize(target.parent().unwrap_or(Path::new("/"))).await?;
+            let link = relative_path(&parent, real);
+            tokio::fs::symlink(link, target).await?;
+            tokio::fs::remove_file(entry).await?;
+            return Ok(());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = real;
+
+    // Para archivos regulares, enlace + borrado: nunca un rename sobre un
+    // destino aparecido entre la comprobación y la escritura.
+    link_or_rename(entry, target, tokio::fs::hard_link(entry, target).await).await
+}
+
+/// Completa el movimiento según el resultado de `hard_link(entry, target)`.
+async fn link_or_rename(
+    entry: &Path,
+    target: &Path,
+    linked: std::io::Result<()>,
+) -> Result<(), ApiError> {
+    match linked {
+        Ok(()) => tokio::fs::remove_file(entry).await?,
+        Err(error) if fs::hard_link_unsupported(&error) => {
+            // Sin enlaces duros: rename, tras volver a comprobar que el destino sigue libre.
+            match tokio::fs::symlink_metadata(target).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return Err(ApiError::new(
+                        409,
+                        "A file or folder already exists at that path.",
+                    ))
+                }
+            }
+            tokio::fs::rename(entry, target).await?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(ApiError::new(
+                409,
+                "A file or folder already exists at that path.",
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
-    let payload = body_json(req).await;
+    let payload = body_json(req).await?;
     let from = payload.get("from").and_then(Value::as_str);
     let to = payload.get("to").and_then(Value::as_str);
     let (Some(from), Some(to)) = (from, to) else {
@@ -474,14 +680,8 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     }
     let (real, entry) = fs::resolve_entry(&state.root, Some(from)).await?;
     let target = fs::resolve_new(&state.root, Some(to)).await?;
-    if let Some(parent) = target.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
     // Desviación A-019: bloquear también el destino para dos moves concurrentes.
-    let mut keys = [
-        real.to_string_lossy().into_owned(),
-        target.to_string_lossy().into_owned(),
-    ];
+    let mut keys = [fs::lock_key(&real).await, fs::lock_key(&target).await];
     keys.sort();
     let locks_first = state.locks.clone();
     let locks_second = state.locks.clone();
@@ -489,15 +689,7 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     let second = keys[1].clone();
     fs::with_file_lock(&locks_first, &first, async move {
         fs::with_file_lock(&locks_second, &second, async move {
-            let metadata = tokio::fs::symlink_metadata(&entry).await?;
-            if metadata.file_type().is_symlink() {
-                let link = relative_path(target.parent().unwrap_or(Path::new("/")), &real);
-                #[cfg(unix)]
-                tokio::fs::symlink(link, &target).await?;
-                tokio::fs::remove_file(&entry).await?;
-            } else {
-                tokio::fs::rename(&entry, &target).await?;
-            }
+            move_with_parents(&real, &entry, &target).await?;
             Ok(empty_response(204, None))
         })
         .await
@@ -505,10 +697,12 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     .await
 }
 
-pub async fn events_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
-    let (receiver, cancel, guard) = state.watcher.lock().await.hub().subscribe();
-    let stream = state.watcher.lock().await.hub().stream(
+pub async fn events_get(
+    State(state): State<AppState>,
+    _req: Request,
+) -> Result<Response, ApiError> {
+    let (receiver, cancel, guard) = state.sse.subscribe();
+    let stream = state.sse.stream(
         receiver,
         cancel,
         std::time::Duration::from_millis(pure::SSE_HEARTBEAT_MS),
@@ -529,7 +723,7 @@ pub async fn events_get(State(state): State<AppState>, req: Request) -> Result<R
 }
 
 async fn files_dispatch(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    if req.method() == Method::GET {
+    if matches!(req.method(), &Method::GET | &Method::HEAD) {
         raw_get(State(state), req).await
     } else {
         Ok(state.assets.fallback())
@@ -537,7 +731,6 @@ async fn files_dispatch(State(state): State<AppState>, req: Request) -> Result<R
 }
 
 pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    state.guard(&req)?;
     let encoded = req
         .uri()
         .path()
@@ -545,28 +738,40 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
         .unwrap_or(req.uri().path());
     let decoded = percent_decode(encoded)?;
     let file = fs::resolve_file(&state.root, Some(&decoded)).await?;
-    let content_type = mime_for(&file);
-    let body = String::from_utf8_lossy(&tokio::fs::read(&file).await?).into_owned();
-    Ok(text_response(
-        200,
-        content_type,
-        body,
-        None,
-        &[
-            ("content-security-policy", "sandbox"),
-            ("x-content-type-options", "nosniff"),
-        ],
-    ))
+    let is_markdown = pure::is_markdown_path(&file.to_string_lossy());
+    // ServeFile aporta Range, HEAD, If-Range y el MIME (mime_guess) sin cargar el archivo.
+    let response = ServeFile::new(&file)
+        .oneshot(req)
+        .await
+        .expect("ServeFile es infalible");
+    let mut response = response.map(Body::new);
+    let headers = response.headers_mut();
+    if is_markdown {
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/markdown"),
+        );
+    }
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("sandbox"),
+    );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(NO_STORE));
+    Ok(response)
 }
 
-pub async fn index_get(State(state): State<AppState>) -> Response {
-    state.assets.index_response()
+pub async fn index_get(State(state): State<AppState>, req: Request) -> Response {
+    state.assets.index_conditional(if_none_match(&req))
 }
 
 pub async fn asset_get(State(state): State<AppState>, req: Request) -> Response {
     state
         .assets
-        .asset_response(req.uri().path())
+        .asset_conditional(req.uri().path(), if_none_match(&req))
         .unwrap_or_else(|| state.assets.fallback())
 }
 
@@ -588,48 +793,8 @@ fn relative_path(from: &Path, to: &Path) -> PathBuf {
     out
 }
 
-fn mime_for(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_lowercase()
-        .as_str()
-    {
-        "md" => "text/markdown",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "css" => "text/css",
-        "js" => "text/javascript",
-        "woff2" => "font/woff2",
-        "html" => "text/html",
-        _ => "application/octet-stream",
-    }
-}
-
 fn percent_decode(value: &str) -> Result<String, ApiError> {
-    let bytes = value.as_bytes();
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = value.get(index + 1..index + 3);
-            let decoded = hex.and_then(|pair| u8::from_str_radix(pair, 16).ok());
-            match decoded {
-                Some(byte) => {
-                    out.push(byte);
-                    index += 3;
-                    continue;
-                }
-                None => return Err(ApiError::new(400, "Missing or invalid path.")),
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    pure::percent_decode(value).ok_or_else(|| ApiError::new(400, "Missing or invalid path."))
 }
 
 impl AppState {
@@ -661,25 +826,214 @@ async fn api_dispatch(State(state): State<AppState>, req: Request) -> Result<Res
     }
 }
 
+async fn guard_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    state.guard(&req)?;
+    Ok(next.run(req).await)
+}
+
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{any, get};
+
+    let guarded = axum::Router::new()
+        .route("/files/{*path}", any(files_dispatch))
+        .route("/api/{*path}", any(api_dispatch))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            guard_middleware,
+        ));
 
     axum::Router::new()
         .route("/", get(index_get))
         .route("/view/{*path}", get(index_get))
-        .route("/files/{*path}", any(files_dispatch))
-        .route("/api/{*path}", any(api_dispatch))
+        .merge(guarded)
         .fallback(asset_get)
         .with_state(state)
 }
 
 pub fn bind_addr(port: u16) -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], port))
+    SocketAddr::new(pure::HOSTNAME.parse().expect("HOSTNAME válido"), port)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "markvi-move-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn status(error: ApiError) -> u16 {
+        match error {
+            ApiError::Http(status, _) => status,
+            other => panic!("error inesperado: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn move_no_sobrescribe_un_destino_que_aparece_bajo_el_candado() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "origen").unwrap();
+        std::fs::write(&target, "destino").unwrap();
+
+        let error = move_into(&source, &source, &target).await.unwrap_err();
+        assert_eq!(status(error), 409);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "destino");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
+    }
+
+    #[tokio::test]
+    async fn mueve_archivo_normal_y_enlace() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "contenido").unwrap();
+        move_into(&source, &source, &target).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
+        assert!(!source.exists());
+
+        #[cfg(unix)]
+        {
+            let real = dir.path().join("real.md");
+            let alias = dir.path().join("alias.md");
+            let target = dir.path().join("movido.md");
+            std::fs::write(&real, "# Destino\n").unwrap();
+            std::os::unix::fs::symlink("real.md", &alias).unwrap();
+            move_into(&real, &alias, &target).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "# Destino\n");
+            assert!(std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(!alias.exists());
+            assert!(real.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn respaldo_sin_hard_link_hace_rename_si_el_destino_sigue_libre() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "contenido").unwrap();
+        let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
+        link_or_rename(&source, &target, Err(unsupported))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
+        assert!(!source.exists());
+    }
+
+    #[tokio::test]
+    async fn respaldo_sin_hard_link_no_pisa_un_destino_aparecido() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "origen").unwrap();
+        std::fs::write(&target, "destino").unwrap();
+        let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
+        let error = link_or_rename(&source, &target, Err(unsupported))
+            .await
+            .unwrap_err();
+        assert_eq!(status(error), 409);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "destino");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
+    }
+
+    #[tokio::test]
+    async fn mover_a_carpeta_nueva_limpia_si_falla() {
+        let dir = Temp::new();
+        let missing_source = dir.path().join("no-existe.md");
+        let target = dir.path().join("nuevo/hondo/x.md");
+        let error = move_with_parents(&missing_source, &missing_source, &target)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::Io(_)), "{error:?}");
+        assert!(!dir.path().join("nuevo").exists(), "quedó nuevo/");
+
+        // Con éxito, los padres se conservan.
+        let source = dir.path().join("a.md");
+        std::fs::write(&source, "a").unwrap();
+        move_with_parents(&source, &source, &target).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "a");
+    }
+
+    #[tokio::test]
+    async fn remove_created_no_toca_directorios_con_contenido() {
+        let dir = Temp::new();
+        let file = dir.path().join("p/q/x.md");
+        let created = create_parents(&file).await.unwrap();
+        assert_eq!(created.len(), 2);
+        std::fs::write(dir.path().join("p/q/ajeno.txt"), "x").unwrap();
+        remove_created(&created).await;
+        assert!(dir.path().join("p/q/ajeno.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mover_alias_a_carpeta_que_es_symlink_deja_enlace_valido() {
+        let dir = Temp::new();
+        let real = dir.path().join("real.md");
+        let alias = dir.path().join("alias.md");
+        std::fs::write(&real, "# Destino\n").unwrap();
+        std::os::unix::fs::symlink("real.md", &alias).unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+        std::os::unix::fs::symlink("a/b/c", dir.path().join("lnk")).unwrap();
+
+        let target = dir.path().join("lnk/movido.md");
+        move_into(&real, &alias, &target).await.unwrap();
+
+        assert!(!alias.exists());
+        let link = std::fs::read_link(&target).unwrap();
+        assert_eq!(link, PathBuf::from("../../../real.md"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# Destino\n");
+    }
+
+    #[test]
+    fn config_json_byte_a_byte() {
+        let raw: toml::Table =
+            toml::from_str("theme = 'dark'\n[keymap.view]\nJ = 'j'\nK = 'k'\n").unwrap();
+        let (config, warnings) = config::validate_config(&raw);
+        let loaded = LoadedConfig {
+            config,
+            warnings,
+            path: "/tmp/markvi-config.toml".to_string(),
+            exists: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&loaded).unwrap(),
+            r#"{"config":{"leader":" ","theme":"dark","font":null,"editor":{"number":true,"relativenumber":false,"scrolloff":0},"leaderBindings":[{"keys":["f"],"action":"find"},{"keys":["/"],"action":"grep"},{"keys":["r"],"action":"recent"},{"keys":["a"],"action":"alternate"},{"keys":["t"],"action":"toc"},{"keys":["b"],"action":"backlinks"},{"keys":["x"],"action":"close"}],"viewRemap":{"J":"j","K":"k"},"vimMappings":[],"render":{"footnotes":true,"alerts":true,"frontmatter":true,"remoteimages":false}},"warnings":[],"path":"/tmp/markvi-config.toml","exists":true}"#
+        );
+    }
 
     fn header(response: &Response, name: &str) -> String {
         response

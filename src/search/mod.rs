@@ -1,11 +1,12 @@
-//! Búsqueda y backlinks. Espejo de `src/search.ts` y `src/backlinks.ts`.
+//! Búsqueda y backlinks literales sobre Markdown.
 //! El query se escapa en TS (`escapeRegExp`), así que aquí es búsqueda literal:
 //! no se necesita el crate `regex`. El plegado de-case replica `/i` sin `u` de Bun.
 
 use crate::{
-    core::pure::{is_case_sensitive, is_markdown_path, wiki_links, WikiIndex, WikiRef},
+    core::pure::{self, is_case_sensitive, is_markdown_path, wiki_links, WikiIndex},
     fs::{self, MarkdownEntry},
 };
+use futures_util::{stream, StreamExt};
 use std::sync::Arc;
 
 /// Resultado por archivo: el contrato TS usa `hits` aquí y `results` en el agregado.
@@ -60,10 +61,6 @@ fn fold(c: char) -> char {
     }
 }
 
-fn utf16_len(text: &str) -> usize {
-    text.chars().map(|c| c.len_utf16()).sum()
-}
-
 fn split_lines(text: &str) -> Vec<&str> {
     let mut lines = Vec::new();
     let bytes = text.as_bytes();
@@ -85,24 +82,88 @@ fn split_lines(text: &str) -> Vec<&str> {
     lines
 }
 
-fn equal_at(chars: &[char], at: usize, query: &[char], sensitive: bool) -> bool {
-    if at + query.len() > chars.len() {
+/// Query plegada una sola vez por búsqueda (o por llamada directa).
+fn folded_query(query: &str, sensitive: bool) -> Vec<char> {
+    if sensitive {
+        query.chars().collect()
+    } else {
+        query.chars().map(fold).collect()
+    }
+}
+
+fn contains_ascii_ci(text: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let needle = query.as_bytes();
+    if needle.len() > bytes.len() {
         return false;
     }
-    query.iter().enumerate().all(|(offset, expected)| {
-        let actual = chars[at + offset];
-        if sensitive {
-            actual == *expected
-        } else {
-            fold(actual) == fold(*expected)
-        }
+    let first = needle[0];
+    bytes.windows(needle.len()).any(|window| {
+        window[0].eq_ignore_ascii_case(&first)
+            && window
+                .iter()
+                .zip(needle)
+                .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
     })
 }
 
 /// Rangos UTF-16 de las coincidencias literales no solapadas de `query` en `line`.
-fn literal_ranges(line: &str, query: &str, sensitive: bool) -> Vec<(usize, usize)> {
-    let query_chars: Vec<char> = query.chars().collect();
+fn literal_ranges(
+    line: &str,
+    query: &str,
+    folded: &[char],
+    sensitive: bool,
+) -> Vec<(usize, usize)> {
+    if folded.is_empty() {
+        return Vec::new();
+    }
+    // Prefiltro por línea: evita materializar caracteres y offsets si no hay match.
+    if sensitive {
+        if !line.contains(query) {
+            return Vec::new();
+        }
+    } else if query.is_ascii() {
+        if !contains_ascii_ci(line, query) {
+            return Vec::new();
+        }
+    }
+    // ASCII: byte offset == UTF-16 offset, sin char_indices ni Vec<char>.
+    if line.is_ascii() && query.is_ascii() {
+        if sensitive {
+            return line
+                .match_indices(query)
+                .map(|(at, matched)| (at, at + matched.len()))
+                .collect();
+        }
+        let bytes = line.as_bytes();
+        let needle = query.as_bytes();
+        let mut ranges = Vec::new();
+        let mut at = 0;
+        while at + needle.len() <= bytes.len() {
+            if bytes[at..at + needle.len()]
+                .iter()
+                .zip(needle)
+                .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+            {
+                ranges.push((at, at + needle.len()));
+                at += needle.len();
+            } else {
+                at += 1;
+            }
+        }
+        return ranges;
+    }
+
     let chars: Vec<char> = line.chars().collect();
+    // Plegar una sola vez por línea, no en cada posición candidata.
+    let folded_line: Vec<char> = chars
+        .iter()
+        .copied()
+        .map(|character| if sensitive { character } else { fold(character) })
+        .collect();
     let mut offsets = Vec::with_capacity(chars.len() + 1);
     let mut cursor = 0;
     for c in &chars {
@@ -113,10 +174,11 @@ fn literal_ranges(line: &str, query: &str, sensitive: bool) -> Vec<(usize, usize
 
     let mut ranges = Vec::new();
     let mut at = 0;
-    while at + query_chars.len() <= chars.len() {
-        if equal_at(&chars, at, &query_chars, sensitive) {
-            ranges.push((offsets[at], offsets[at + query_chars.len()]));
-            at += query_chars.len();
+    while at + folded.len() <= chars.len() {
+        let matches = &folded_line[at..at + folded.len()] == folded;
+        if matches {
+            ranges.push((offsets[at], offsets[at + folded.len()]));
+            at += folded.len();
         } else {
             at += 1;
         }
@@ -133,10 +195,10 @@ pub fn build_hit(
 ) -> crate::core::pure::SearchHit {
     let units: Vec<u16> = raw.encode_utf16().collect();
     let trimmed_start = raw.trim_start();
-    let lead = units.len() - utf16_len(trimmed_start);
+    let lead = units.len() - pure::utf16_len(trimmed_start);
     let trimmed_end = raw.trim_end();
     let mut start = lead;
-    let mut end = utf16_len(trimmed_end);
+    let mut end = pure::utf16_len(trimmed_end);
     let mut cut_end = false;
 
     if end - start > MAX_TEXT {
@@ -179,10 +241,39 @@ pub fn build_hit(
 
 pub fn search_text(path: &str, text: &str, query: &str, per_file: usize) -> FileHits {
     let sensitive = is_case_sensitive(query);
+    let folded = folded_query(query, sensitive);
+    search_text_prepared(path, text, query, per_file, sensitive, &folded)
+}
+
+/// Misma búsqueda, con `sensitive` y la query plegada calculados una sola vez.
+fn search_text_prepared(
+    path: &str,
+    text: &str,
+    query: &str,
+    per_file: usize,
+    sensitive: bool,
+    folded: &[char],
+) -> FileHits {
+    let empty = || FileHits {
+        hits: Vec::new(),
+        truncated: false,
+    };
+    if folded.is_empty() {
+        return empty();
+    }
+    // Prefiltro: sin candidato no hay que dividir el texto en líneas.
+    if sensitive {
+        if !text.contains(query) {
+            return empty();
+        }
+    } else if query.is_ascii() && !contains_ascii_ci(text, query) {
+        return empty();
+    }
+
     let mut hits = Vec::new();
     let mut truncated = false;
     for (index, line) in split_lines(text).iter().enumerate() {
-        let ranges = literal_ranges(line, query, sensitive);
+        let ranges = literal_ranges(line, query, folded, sensitive);
         if ranges.is_empty() {
             continue;
         }
@@ -195,6 +286,13 @@ pub fn search_text(path: &str, text: &str, query: &str, per_file: usize) -> File
     FileHits { hits, truncated }
 }
 
+fn empty_hits() -> FileHits {
+    FileHits {
+        hits: Vec::new(),
+        truncated: false,
+    }
+}
+
 /// Escanea los archivos Markdown visibles aplicando `search_file`.
 pub async fn scan_markdown<F>(
     root: &std::path::Path,
@@ -203,40 +301,75 @@ pub async fn scan_markdown<F>(
     search_file: F,
 ) -> crate::core::pure::SearchResults
 where
-    F: Fn(&str, &str, usize) -> FileHits,
+    F: Fn(&str, &str, usize) -> FileHits + Send + Sync + 'static,
 {
     let all_files = match files {
         Some(files) => files,
         None => fs::unique_paths(&fs::list_markdown_entries(root).await),
     };
+    let ScanOptions {
+        limit,
+        per_file,
+        max_file_bytes,
+        concurrency,
+    } = options;
+    let concurrency = concurrency.max(1);
+    let root = root.to_path_buf();
+    let search_file = Arc::new(search_file);
+
+    let tasks = all_files.into_iter().map(|path| {
+        let root = root.clone();
+        let search_file = Arc::clone(&search_file);
+        async move {
+            let file = root.join(&path);
+            // El metadata evita abrir/leer archivos obviamente demasiado grandes.
+            match tokio::fs::metadata(&file).await {
+                Ok(metadata) if metadata.len() <= max_file_bytes => {}
+                _ => return empty_hits(),
+            }
+            tokio::task::spawn_blocking(move || {
+                use std::io::Read;
+                let opened = std::fs::File::open(&file);
+                let mut handle = match opened {
+                    Ok(handle) => handle,
+                    Err(_) => return empty_hits(),
+                };
+                let mut bytes = Vec::new();
+                if handle
+                    .by_ref()
+                    .take(max_file_bytes.saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .is_err()
+                    || bytes.len() as u64 > max_file_bytes
+                {
+                    return empty_hits();
+                }
+                let text = String::from_utf8_lossy(&bytes);
+                search_file(&path, text.as_ref(), per_file)
+            })
+            .await
+            .unwrap_or_else(|_| empty_hits())
+        }
+    });
+
+    // `buffered` conserva el orden de entrada; al alcanzar el límite se deja
+    // de consumir el stream y se cancelan las lecturas que aún estén pendientes.
+    let mut pending = stream::iter(tasks).buffered(concurrency);
     let mut results = Vec::new();
     let mut full = false;
     let mut capped = false;
-    for path in all_files {
-        if full {
-            break;
-        }
-        let file = root.join(&path);
-        let metadata = match tokio::fs::metadata(&file).await {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        if metadata.len() > options.max_file_bytes {
-            continue;
-        }
-        let text = match tokio::fs::read_to_string(&file).await {
-            Ok(text) => text,
-            Err(_) => continue,
-        };
-        let found = search_file(&path, &text, options.per_file);
-        for hit in found.hits {
-            if results.len() >= options.limit {
+    while let Some(entry) = pending.next().await {
+        capped |= entry.truncated;
+        for hit in entry.hits {
+            if results.len() >= limit {
                 full = true;
                 break;
             }
             results.push(hit);
         }
-        capped |= found.truncated;
+        if full {
+            break;
+        }
     }
     crate::core::pure::SearchResults {
         results,
@@ -249,15 +382,17 @@ pub async fn search_markdown(
     query: &str,
     options: ScanOptions,
 ) -> crate::core::pure::SearchResults {
-    let needle = query.trim();
+    let needle = query.trim().to_string();
     if needle.is_empty() {
         return crate::core::pure::SearchResults {
             results: Vec::new(),
             truncated: false,
         };
     }
-    scan_markdown(root, options, None, |path, text, per_file| {
-        search_text(path, text, needle, per_file)
+    let sensitive = is_case_sensitive(&needle);
+    let folded = Arc::new(folded_query(&needle, sensitive));
+    scan_markdown(root, options, None, move |path, text, per_file| {
+        search_text_prepared(path, text, &needle, per_file, sensitive, folded.as_slice())
     })
     .await
 }
@@ -265,7 +400,6 @@ pub async fn search_markdown(
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct FoundLink {
     line: usize,
-    raw: String,
     range: (usize, usize),
     kind: LinkKind,
     target: String,
@@ -279,7 +413,7 @@ pub enum LinkKind {
 }
 
 fn may_have_links(line: &str) -> bool {
-    line.contains("[[") || line.to_lowercase().contains(".md")
+    line.contains("[[") || contains_ascii_ci(line, ".md")
 }
 
 /// Sustituye por espacios el código en línea, conservando longitudes UTF-16.
@@ -323,6 +457,16 @@ fn mask_inline_code(line: &str) -> String {
 fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
     let mut out = Vec::new();
     let units: Vec<u16> = line.encode_utf16().collect();
+    // Para cada posición, índice del siguiente `]` o salto de línea. Se calcula
+    // en una pasada y evita volver a recorrer el sufijo por cada `[`.
+    let mut next_close = vec![units.len(); units.len() + 1];
+    let mut next = units.len();
+    for index in (0..units.len()).rev() {
+        if units[index] == b']' as u16 || units[index] == b'\n' as u16 {
+            next = index;
+        }
+        next_close[index] = next;
+    }
     let mut at = 0;
     while at < units.len() {
         if units[at] != b'[' as u16 {
@@ -334,17 +478,17 @@ fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
             at += 1;
             continue;
         }
-        let Some(close_bracket) = units[at + 1..]
-            .iter()
-            .position(|u| *u == b']' as u16 || *u == b'\n' as u16)
-            .map(|index| at + 1 + index)
-        else {
+        if at + 1 >= units.len() {
             break;
-        };
-        if units[close_bracket] != b']' as u16
-            || close_bracket + 1 >= units.len()
-            || units[close_bracket + 1] != b'(' as u16
-        {
+        }
+        let close_bracket = next_close[at + 1];
+        if close_bracket == units.len() {
+            break;
+        }
+        if units[close_bracket] != b']' as u16 {
+            break;
+        }
+        if close_bracket + 1 >= units.len() || units[close_bracket + 1] != b'(' as u16 {
             at += 1;
             continue;
         }
@@ -397,14 +541,21 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
     let mut fence: Option<(char, usize)> = None;
     for (index, raw) in split_lines(source).iter().enumerate() {
         let trimmed = raw.trim_start_matches(' ');
-        let marker = if trimmed.len() <= raw.len() && raw.len() - trimmed.len() <= 3 {
-            let ticks = trimmed
-                .chars()
-                .take_while(|c| *c == '`' || *c == '~')
-                .count();
-            let symbol = trimmed.chars().next();
-            if (symbol == Some('`') || symbol == Some('~')) && ticks >= 3 {
-                Some((symbol.unwrap(), ticks, trimmed[ticks..].trim()))
+        let symbol = trimmed.chars().next();
+        let marker = if trimmed.len() <= raw.len()
+            && raw.len() - trimmed.len() <= 3
+            && (symbol == Some('`') || symbol == Some('~'))
+        {
+            let ticks = trimmed.chars().take_while(|c| Some(*c) == symbol).count();
+            if ticks >= 3 {
+                let rest = trimmed[ticks..].trim();
+                // CommonMark: el info-string de una valla de backticks no puede
+                // contener backticks; esa línea es texto normal.
+                if symbol == Some('`') && rest.contains('`') {
+                    None
+                } else {
+                    Some((symbol.unwrap(), ticks, rest))
+                }
             } else {
                 None
             }
@@ -425,21 +576,17 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
             continue;
         }
         let text = mask_inline_code(raw);
-        for (start, full) in wiki_links(&text) {
-            if let Some(ref_) = parse_ref(&full) {
-                links.push(FoundLink {
-                    line: index + 1,
-                    raw: (*raw).to_string(),
-                    range: (start, start + utf16_len(&full)),
-                    kind: LinkKind::Wiki,
-                    target: ref_.target,
-                });
-            }
+        for (start, full, ref_) in wiki_links(&text) {
+            links.push(FoundLink {
+                line: index + 1,
+                range: (start, start + pure::utf16_len(&full)),
+                kind: LinkKind::Wiki,
+                target: ref_.target,
+            });
         }
         for (range, target) in markdown_links(&text) {
             links.push(FoundLink {
                 line: index + 1,
-                raw: (*raw).to_string(),
                 range,
                 kind: LinkKind::Markdown,
                 target,
@@ -447,11 +594,6 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
         }
     }
     links
-}
-
-fn parse_ref(full: &str) -> Option<WikiRef> {
-    let inner = full.strip_prefix("[[")?.strip_suffix("]]")?;
-    crate::core::pure::parse_wiki_link(inner)
 }
 
 pub fn posix_normalize(path: &str) -> String {
@@ -473,21 +615,7 @@ pub fn posix_normalize(path: &str) -> String {
 }
 
 fn decode_percent(path: &str) -> String {
-    let bytes = path.as_bytes();
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&path[index + 1..index + 3], 16) {
-                out.push(byte);
-                index += 3;
-                continue;
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    pure::percent_decode(path).unwrap_or_else(|| path.to_string())
 }
 
 pub fn markdown_target(destination: &str, from: &str) -> Option<String> {
@@ -535,7 +663,7 @@ pub fn find_backlinks(
     if from == to || !may_have_links(source) {
         return empty;
     }
-    let mut by_line: std::collections::BTreeMap<usize, (String, Vec<(usize, usize)>)> =
+    let mut by_line: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
         std::collections::BTreeMap::new();
     for link in extract_links(source) {
         let resolved = match link.kind {
@@ -545,18 +673,19 @@ pub fn find_backlinks(
         if resolved.as_deref() != Some(to) {
             continue;
         }
-        by_line
-            .entry(link.line)
-            .and_modify(|entry| entry.1.push(link.range))
-            .or_insert((link.raw, vec![link.range]));
+        by_line.entry(link.line).or_default().push(link.range);
     }
+    let lines = split_lines(source);
     let mut hits = Vec::new();
-    for (line, (raw, ranges)) in by_line {
+    for (line, ranges) in by_line {
         if hits.len() >= per_file {
             empty.truncated = true;
             break;
         }
-        hits.push(build_hit(from, line, &raw, &ranges));
+        let Some(raw) = lines.get(line - 1) else {
+            continue;
+        };
+        hits.push(build_hit(from, line, raw, &ranges));
     }
     empty.hits = hits;
     empty
@@ -575,8 +704,43 @@ pub async fn search_backlinks(
             .collect::<Vec<_>>(),
     ));
     let files = fs::unique_paths(&entries);
-    scan_markdown(root, options, Some(files), |path, text, per_file| {
-        find_backlinks(text, path, target, &index, per_file)
+    let target = target.to_string();
+    scan_markdown(root, options, Some(files), move |path, text, per_file| {
+        find_backlinks(text, path, &target, index.as_ref(), per_file)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_percent;
+
+    #[test]
+    fn decode_percent_no_panica_con_multibyte_y_deja_literal_invalido() {
+        // %aé corta un carácter UTF-8: antes hacía panic en el slice &str.
+        assert_eq!(decode_percent("%aé.md"), "%aé.md");
+        assert_eq!(decode_percent("%41"), "A");
+        assert_eq!(decode_percent("%+4"), "%+4");
+        assert_eq!(decode_percent("%"), "%");
+    }
+
+    #[test]
+    fn found_link_no_clona_la_linea_completa() {
+        assert!(
+            std::mem::size_of::<super::FoundLink>() <= 64,
+            "FoundLink sigue guardando una copia de la línea por enlace"
+        );
+    }
+
+    #[test]
+    fn markdown_links_lineal_en_corchetes_sin_destino() {
+        let line = format!("{}]", "[".repeat(100_000));
+        let start = std::time::Instant::now();
+        assert!(super::markdown_links(&line).is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(100),
+            "markdown_links tardó {:?} con 100k corchetes",
+            start.elapsed()
+        );
+    }
 }

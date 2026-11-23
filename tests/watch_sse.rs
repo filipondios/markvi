@@ -66,6 +66,34 @@ async fn collect(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn watcher_emite_la_segunda_escritura_separada_100ms() {
+    let temp = Temp::new();
+    temp.write("dos.md", "v0");
+    let mut watcher = FileWatcher::new(temp.path());
+    let mut events = watcher.subscribe();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let _ = collect(&mut events, 50).await;
+
+    temp.write("dos.md", "v1");
+    // La segunda escritura cae ~100 ms después de la primera: dentro del
+    // debounce de 80 ms por ruta, pero también dentro del viejo dedupe de 150 ms.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    temp.write("dos.md", "v2");
+
+    let emitted = collect(&mut events, 500).await;
+    let changes = emitted
+        .iter()
+        .filter(|event| event.path == "dos.md" && event.kind == DiskEventKind::Change)
+        .count();
+    assert!(
+        changes >= 2,
+        "se descartó una de las escrituras: {emitted:?}"
+    );
+    assert!(changes <= 3, "ráfaga de duplicados: {emitted:?}");
+    watcher.close();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn watcher_create_modify_rename_remove_and_burst() {
     let temp = Temp::new();
     temp.write("inicial.md", "inicial");
@@ -80,11 +108,9 @@ async fn watcher_create_modify_rename_remove_and_burst() {
         burst.contains(&event("nuevo.md", DiskEventKind::Change)),
         "{burst:?}"
     );
-    assert_eq!(
-        burst.iter().filter(|e| e.path == "nuevo.md").count(),
-        1,
-        "debounce: {burst:?}"
-    );
+    // `fs::write` no es atómico: crear y cerrar pueden llegar como dos eventos.
+    let changes = burst.iter().filter(|e| e.path == "nuevo.md").count();
+    assert!((1..=3).contains(&changes), "ráfaga inesperada: {burst:?}");
 
     temp.write("nuevo.md", "ab");
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -237,6 +263,54 @@ async fn sse_streams_events_heartbeat_reconnect_and_cancel_without_blocking() {
     server.abort();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_conexion_sigue_abierta_tras_muchos_archivos() {
+    let temp = Temp::new();
+    temp.write("base.md", "base");
+    let mut watcher = FileWatcher::new(temp.path());
+    let hub = watcher.hub();
+    let app = Router::new()
+        .route("/api/events", get(events_handler))
+        .with_state(hub);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut client = tokio::task::spawn_blocking(move || open_sse(port))
+        .await
+        .unwrap();
+    // En paralelo para que los temporizadores de 80 ms venzan a la vez y
+    // desborden el buffer de 1024 eventos.
+    let mut writers = Vec::new();
+    for chunk in 0..6u32 {
+        let vault = temp.path().to_path_buf();
+        writers.push(tokio::task::spawn_blocking(move || {
+            for index in 0..100 {
+                std::fs::write(vault.join(format!("n{chunk}-{index}.md")), "x").unwrap();
+            }
+        }));
+    }
+    for writer in writers {
+        writer.await.unwrap();
+    }
+
+    let vault = temp.path().to_path_buf();
+    let (client, _first, second) = tokio::task::spawn_blocking(move || {
+        let first = read_until(&mut client, "data:", 5000);
+        std::fs::write(vault.join("despues.md"), "x").unwrap();
+        let second = read_until(&mut client, "\"path\":\"despues.md\"", 5000);
+        (client, first, second)
+    })
+    .await
+    .unwrap();
+
+    assert!(second.contains("\"path\":\"despues.md\""), "{second:?}");
+    drop(client);
+    watcher.close();
+    server.abort();
+}
+
 #[tokio::test]
 async fn sse_guard_removes_cancellation_when_stream_is_dropped() {
     let temp = Temp::new();
@@ -284,4 +358,17 @@ fn shutdown_signal_handles_sigterm_and_sigint() {
         let _ = child.wait();
         assert!(output.contains("bye"), "signal {signal}: {output:?}");
     }
+}
+
+#[tokio::test]
+async fn suscripcion_posterior_a_cancel_all_nace_cancelada() {
+    let temp = Temp::new();
+    let watcher = FileWatcher::new(temp.path());
+    let hub = watcher.hub();
+    hub.cancel_all();
+    let (_receiver, cancel, _guard) = hub.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(1), cancel)
+        .await
+        .expect("el stream tardío no se canceló: el apagado quedaría colgado")
+        .unwrap();
 }

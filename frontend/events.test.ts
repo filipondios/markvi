@@ -67,13 +67,13 @@ class FakeChannel implements ChannelLike {
 class FakeSource implements SourceLike {
   closed = false;
   private listeners: Record<string, Array<(event: { data?: string }) => void>> = {};
-  addEventListener(type: "open" | "message", listener: (event: { data?: string }) => void) {
+  addEventListener(type: string, listener: (event: { data?: string }) => void) {
     (this.listeners[type] ??= []).push(listener);
   }
   close() {
     this.closed = true;
   }
-  emit(type: "open" | "message", data?: string) {
+  emit(type: string, data?: string) {
     for (const listener of this.listeners[type] ?? []) listener({ data });
   }
 }
@@ -118,6 +118,22 @@ test("parseDiskEvent acepta solo eventos válidos", () => {
   expect(parseDiskEvent({ type: "change", path: 1 })).toBeNull();
   expect(parseDiskEvent(null)).toBeNull();
   expect(parseDiskEvent("change")).toBeNull();
+});
+
+test("resync del servidor fuerza revisión completa y se reparte a las demás ventanas", async () => {
+  const { openWindow, sources } = setup();
+  const leader = openWindow("lidere");
+  const other = openWindow("otra");
+  await tick();
+
+  sources[0]!.emit("open");
+  expect(leader.resyncs).toEqual([false]);
+  expect(other.resyncs).toEqual([]);
+
+  sources[0]!.emit("resync", "{}");
+  await tick();
+  expect(leader.resyncs).toEqual([false, true]);
+  expect(other.resyncs).toEqual([true]);
 });
 
 test("sin Web Locks ni BroadcastChannel abre su propio flujo, como antes", () => {

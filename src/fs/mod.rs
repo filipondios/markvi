@@ -1,5 +1,4 @@
-//! Confinamiento al root y escrituras atómicas. Espejo de `src/files.ts` y `src/atomic.ts`.
-//! Diseño de seguridad: rust/fs/SECURITY-DESIGN.md (revisado, sin hallazgos altos).
+//! Confinamiento al root y escrituras atómicas.
 
 use std::{
     collections::HashMap,
@@ -33,7 +32,7 @@ impl HttpError {
 
 pub type FsResult<T> = Result<T, HttpError>;
 
-fn ignored(name: &str) -> bool {
+pub(crate) fn is_ignored(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
 }
 
@@ -91,10 +90,31 @@ pub fn segments_inside(root: &Path, target: &Path) -> Option<Vec<String>> {
 fn check(root: &Path, target: &Path) -> FsResult<Vec<String>> {
     let segments = segments_inside(root, target)
         .ok_or_else(|| HttpError::new(403, "Path outside the root directory."))?;
-    if segments.iter().any(|part| ignored(part)) {
+    if segments.iter().any(|part| is_ignored(part)) {
         return Err(HttpError::new(404, "File not found."));
     }
     Ok(segments)
+}
+
+/// Lectura coherente con `GET`: bytes inválidos se sustituyen, no se omiten.
+pub async fn read_lossy(path: &Path) -> std::io::Result<String> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Como `read_lossy`, indicando si hubo sustituciones (el archivo no era UTF-8 válido).
+pub async fn read_text(path: &Path) -> std::io::Result<(String, bool)> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(match String::from_utf8(bytes) {
+        Ok(text) => (text, false),
+        Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
+    })
+}
+
+/// `Ok(false)` si el archivo existe y no es UTF-8 válido; `NotFound` se propaga.
+pub async fn is_valid_utf8(path: &Path) -> std::io::Result<bool> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(std::str::from_utf8(&bytes).is_ok())
 }
 
 fn missing_path() -> HttpError {
@@ -175,7 +195,7 @@ pub async fn resolve_new(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
     let target = resolve(root, path);
     let segments = segments_inside(root, &target)
         .ok_or_else(|| HttpError::new(403, "Path outside the root directory."))?;
-    if segments.iter().any(|part| ignored(part)) {
+    if segments.iter().any(|part| is_ignored(part)) {
         return Err(HttpError::new(
             400,
             "Hidden files and folders are not allowed.",
@@ -188,7 +208,7 @@ pub async fn resolve_new(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
             if real != root {
                 let inside = segments_inside(root, &real)
                     .ok_or_else(|| HttpError::new(403, "Path outside the root directory."))?;
-                if inside.iter().any(|part| ignored(part)) {
+                if inside.iter().any(|part| is_ignored(part)) {
                     return Err(HttpError::new(403, "Path outside the root directory."));
                 }
             }
@@ -257,7 +277,7 @@ async fn walk(real_root: &Path, root_dir: &Path, out: &mut Vec<MarkdownEntry>) {
         let mut names = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !ignored(&name) {
+            if !is_ignored(&name) {
                 names.push((name, entry));
             }
         }
@@ -295,7 +315,7 @@ async fn walk(real_root: &Path, root_dir: &Path, out: &mut Vec<MarkdownEntry>) {
                 Err(_) => continue,
             };
             let inside = match segments_inside(real_root, &real) {
-                Some(parts) if !parts.iter().any(|p| ignored(p)) => parts,
+                Some(parts) if !parts.iter().any(|p| is_ignored(p)) => parts,
                 _ => continue,
             };
             if inside.is_empty() {
@@ -395,11 +415,10 @@ pub fn unique_paths(entries: &[MarkdownEntry]) -> Vec<String> {
 fn temp_path_for(target: &Path) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut seed = [0u8; 6];
-    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = file.read_exact(&mut seed);
+    if getrandom::fill(&mut seed).is_err() {
+        eprintln!("getrandom falló; usando pid + contador para el archivo temporal");
     }
-    // Si urandom falla, pid + contador evitan nombres predecibles y colisiones.
+    // Si getrandom falla, pid + contador evitan nombres predecibles y colisiones.
     let extra = std::process::id() as u64
         ^ COUNTER
             .fetch_add(1, Ordering::Relaxed)
@@ -411,8 +430,70 @@ fn temp_path_for(target: &Path) -> PathBuf {
     parent_of(target).join(format!(".markvi-{hex}.tmp"))
 }
 
-fn code_of(error: &std::io::Error) -> Option<i32> {
-    error.raw_os_error()
+/// Los `ErrorKind` son portables; el código numérico queda como respaldo en
+/// Unix, donde `PermissionDenied` y `Unsupported` no cubren todos los casos.
+fn is_permission(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        matches!(error.raw_os_error(), Some(13 | 1))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Errores que indican "este sistema de archivos no admite enlaces duros".
+pub fn hard_link_unsupported(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::Unsupported
+            | std::io::ErrorKind::CrossesDevices
+    ) {
+        return true;
+    }
+    // EPERM, EOPNOTSUPP/ENOTSUP, ENOSYS, EXDEV según el sistema (los números difieren).
+    #[cfg(target_os = "linux")]
+    {
+        matches!(error.raw_os_error(), Some(1 | 95 | 38 | 18))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        matches!(error.raw_os_error(), Some(1 | 45 | 102 | 78 | 18))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Escritura directa de respaldo: si falla, no deja un archivo a medias.
+async fn direct_create_with_cleanup<F, Fut>(target: &Path, write: F) -> std::io::Result<()>
+where
+    F: FnOnce(tokio::fs::File) -> Fut,
+    Fut: Future<Output = std::io::Result<()>>,
+{
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Un AlreadyExists (o cualquier error de apertura) no nos da propiedad
+    // del target: en ese caso nunca debemos intentar eliminarlo.
+    let handle = options.open(target).await?;
+    if let Err(error) = write(handle).await {
+        let _ = tokio::fs::remove_file(target).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn create_direct(target: &Path, data: &str) -> std::io::Result<()> {
+    direct_create_with_cleanup(target, |mut handle| async move {
+        handle.write_all(data.as_bytes()).await?;
+        handle.sync_all().await
+    }).await
 }
 
 async fn write_temp(target: &Path, data: &str, mode: Option<u32>) -> std::io::Result<PathBuf> {
@@ -445,9 +526,12 @@ async fn write_temp(target: &Path, data: &str, mode: Option<u32>) -> std::io::Re
 async fn sync_directory(directory: &Path) {
     #[cfg(unix)]
     {
-        if let Ok(handle) = std::fs::File::open(directory) {
-            let _ = handle.sync_all();
-        }
+        let directory = directory.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(handle) = std::fs::File::open(directory) {
+                let _ = handle.sync_all();
+            }
+        }).await;
     }
     #[cfg(not(unix))]
     let _ = directory;
@@ -463,7 +547,7 @@ pub async fn write_file_atomic(target: &Path, data: &str) -> std::io::Result<()>
     };
     let temp = match write_temp(target, data, mode).await {
         Ok(temp) => temp,
-        Err(error) if mode.is_some() && matches!(code_of(&error), Some(13) | Some(1)) => {
+        Err(error) if mode.is_some() && is_permission(&error) => {
             return tokio::fs::write(target, data).await;
         }
         Err(error) => return Err(error),
@@ -480,17 +564,10 @@ pub async fn create_file_exclusive(target: &Path, data: &str) -> std::io::Result
     let temp = write_temp(target, data, None).await?;
     let result = tokio::fs::hard_link(&temp, target).await;
     if let Err(error) = result {
-        let code = code_of(&error);
-        if matches!(code, Some(1) | Some(95) | Some(38) | Some(18)) {
-            let mut options = tokio::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            let written = async {
-                let mut handle = options.open(target).await?;
-                handle.write_all(data.as_bytes()).await?;
-                handle.sync_all().await
-            }
-            .await;
-            if let Err(fallback) = written {
+        if hard_link_unsupported(&error) {
+            if let Err(fallback) =
+                create_direct(target, data).await
+            {
                 let _ = tokio::fs::remove_file(&temp).await;
                 return Err(fallback);
             }
@@ -509,16 +586,193 @@ pub struct Locks {
     map: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
+impl Locks {
+    pub fn pending_locks(&self) -> usize {
+        self.map.try_lock().map(|map| map.len()).unwrap_or(0)
+    }
+}
+
+/// Clave estable: ruta canónica del archivo (o del padre si aún no existe),
+/// para que un symlink y su destino compartan candado.
+pub async fn lock_key(path: &Path) -> String {
+    let resolved = match tokio::fs::canonicalize(path).await {
+        Ok(path) => path,
+        Err(_) => {
+            let parent = path.parent().unwrap_or(Path::new("/"));
+            tokio::fs::canonicalize(parent).await
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join(path.file_name().unwrap_or_default())
+        }
+    };
+    resolved.to_string_lossy().into_owned()
+}
+
+/// Lanza la escritura en una tarea independiente: si el handler HTTP se cancela,
+/// la escritura termina y no deja temporales.
+pub fn spawn_write(
+    target: PathBuf,
+    data: String,
+    exclusive: bool,
+) -> tokio::task::JoinHandle<std::io::Result<()>> {
+    tokio::spawn(async move {
+        if exclusive {
+            create_file_exclusive(&target, &data).await
+        } else {
+            write_file_atomic(&target, &data).await
+        }
+    })
+}
+
 pub async fn with_file_lock<F, T>(locks: &Locks, key: &str, task: F) -> T
 where
     F: Future<Output = T>,
 {
+    let key = key.to_string();
     let lock = {
         let mut map = locks.map.lock().await;
-        map.entry(key.to_string())
+        map.entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     };
-    let _guard = lock.lock().await;
-    task.await
+    let guard = lock.lock().await;
+    let output = task.await;
+    drop(guard);
+    // Mapa + variable local: si no hay nadie más esperando, podamos la entrada.
+    if Arc::strong_count(&lock) == 2 {
+        let mut map = locks.map.lock().await;
+        if map
+            .get(&key)
+            .is_some_and(|stored| Arc::ptr_eq(stored, &lock))
+        {
+            map.remove(&key);
+        }
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn locks_se_podan_tras_uso_y_clave_unifica_symlink() {
+        let locks = Locks::default();
+        for _ in 0..5 {
+            with_file_lock(&locks, "a.md", async {}).await;
+        }
+        assert_eq!(locks.pending_locks(), 0);
+
+        #[cfg(unix)]
+        {
+            let dir = std::env::temp_dir().join(format!("markvi-lock-key-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let real = dir.join("real.md");
+            let alias = dir.join("alias.md");
+            std::fs::write(&real, "x").unwrap();
+            std::os::unix::fs::symlink("real.md", &alias).unwrap();
+            assert_eq!(lock_key(&real).await, lock_key(&alias).await);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn escritura_en_spawn_completa_si_se_cae_el_cliente() {
+        let dir = std::env::temp_dir().join(format!("markvi-spawn-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("nota.md");
+
+        // El handler se cancela: soltamos el JoinHandle sin esperarlo.
+        drop(spawn_write(target.clone(), "contenido".to_string(), false));
+        // Sondeo en vez de un sleep fijo: bajo carga la tarea puede tardar más.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !target.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contenido");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn lock_y_escritura_sobreviven_a_cancelacion_del_handler() {
+        let dir = std::env::temp_dir().join(format!("markvi-lock-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("nota.md");
+        std::fs::write(&target, "antiguo").unwrap();
+
+        let locks = Arc::new(Locks::default());
+        let key = lock_key(&target).await;
+        let task_locks = locks.clone();
+        let task_target = target.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+
+        // Esta tarea representa la sección crítica que ya no pertenece al
+        // ciclo de vida del handler HTTP.
+        let handler_task = tokio::spawn(async move {
+            with_file_lock(&task_locks, &key, async move {
+                let _ = started_tx.send(());
+                let _ = continue_rx.await;
+                tokio::fs::write(&task_target, "nuevo").await.unwrap();
+            }).await;
+        });
+        started_rx.await.unwrap();
+        drop(handler_task); // el cliente cancela el handler
+
+        let second_locks = locks.clone();
+        let second_target = target.clone();
+        let second_key = lock_key(&target).await;
+        let second_put = tokio::spawn(async move {
+            with_file_lock(&second_locks, &second_key, async move {
+                let current = tokio::fs::read_to_string(&second_target).await.unwrap();
+                // Equivale a If-Match con el ETag/contenido anterior.
+                assert_ne!(current, "antiguo");
+                current
+            }).await
+        });
+
+        continue_tx.send(()).unwrap();
+        assert_eq!(second_put.await.unwrap(), "nuevo");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fallo_en_el_fallback_no_deja_archivo_parcial() {
+        let dir = std::env::temp_dir().join(format!("markvi-fs-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("creado.md");
+
+        let result: std::io::Result<()> = direct_create_with_cleanup(&target, |mut handle| async move {
+            use tokio::io::AsyncWriteExt;
+            handle.write_all(b"parcial").await?;
+            Err(std::io::Error::other("fallo simulado tras escribir"))
+        }).await;
+
+        assert!(result.is_err());
+        assert!(!target.exists(), "quedó el archivo parcial");
+
+        std::fs::write(&target, "ajeno").unwrap();
+        let result = direct_create_with_cleanup(&target, |_handle| async {
+            Ok(())
+        }).await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "ajeno");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

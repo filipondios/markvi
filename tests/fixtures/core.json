@@ -382,11 +382,21 @@
       "output": [
         [
           4,
-          "[[A]]"
+          "[[A]]",
+          {
+            "target": "A",
+            "heading": "",
+            "alias": ""
+          }
         ],
         [
           14,
-          "[[B|b]]"
+          "[[B|b]]",
+          {
+            "target": "B",
+            "heading": "",
+            "alias": "b"
+          }
         ]
       ]
     },

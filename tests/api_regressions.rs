@@ -10,6 +10,8 @@ use std::{
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
+/// Evita que dos fixtures elijan el mismo puerto libre al crearlos en paralelo.
+static PORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct Fixture {
     root: PathBuf,
@@ -19,6 +21,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        let _port_guard = PORT_LOCK.lock().unwrap();
         let root = std::env::temp_dir().join(format!(
             "markvi-api-{}-{}",
             std::process::id(),
@@ -76,6 +79,32 @@ impl Fixture {
         let _ = stream.read_to_string(&mut answer);
         answer
     }
+
+    /// Devuelve (cabeceras, cuerpo) sin pasar el cuerpo por UTF-8.
+    fn request_bytes(&self, path: &str) -> (String, Vec<u8>) {
+        self.request_response(format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            self.port
+        ))
+    }
+
+    fn request_response(&self, request: impl AsRef<str>) -> (String, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(stream, "{}", request.as_ref()).unwrap();
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+        let split = answer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("respuesta HTTP sin fin de cabeceras");
+        (
+            String::from_utf8_lossy(&answer[..split]).into_owned(),
+            answer[split + 4..].to_vec(),
+        )
+    }
 }
 
 impl Drop for Fixture {
@@ -84,6 +113,203 @@ impl Drop for Fixture {
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+fn guard_y_fallback_no_cambian_con_el_middleware() {
+    let fixture = Fixture::new();
+    let bad_host = fixture
+        .request("GET /api/tree HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
+    assert!(bad_host.contains("403 Forbidden"), "{bad_host:?}");
+    assert!(bad_host.contains("Host not allowed."), "{bad_host:?}");
+
+    let bad_origin = fixture.request(
+        "POST /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nOrigin: http://evil.example\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(bad_origin.contains("403 Forbidden"), "{bad_origin:?}");
+    assert!(bad_origin.contains("Origin not allowed."), "{bad_origin:?}");
+
+    let fallback = fixture.request(
+        "POST /no-existe HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(fallback.contains("404 Not Found"), "{fallback:?}");
+    assert!(!fallback.to_lowercase().contains("allow:"), "{fallback:?}");
+}
+
+#[test]
+fn move_por_http_mueve_y_rechaza_destino_existente() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("origen.md"), "contenido").unwrap();
+    let body = r#"{"from":"origen.md","to":"destino.md"}"#;
+    let answer = fixture.request(format!(
+        "POST /api/move HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        fixture.port,
+        body.len()
+    ));
+    assert!(answer.contains("204 No Content"), "{answer:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("destino.md")).unwrap(),
+        "contenido"
+    );
+    assert!(!fixture.root.join("origen.md").exists());
+
+    let body = r#"{"from":"index.md","to":"destino.md"}"#;
+    let answer = fixture.request(format!(
+        "POST /api/move HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        fixture.port,
+        body.len()
+    ));
+    assert!(answer.contains("409 Conflict"), "{answer:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("destino.md")).unwrap(),
+        "contenido"
+    );
+    assert!(fixture.root.join("index.md").exists());
+}
+
+#[test]
+fn archivo_no_utf8_es_lossy_en_get_put_ifmatch_y_busqueda() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("nota.md"), b"palabra \xE9\n").unwrap();
+
+    let get = fixture.request(
+        "GET /api/file?path=nota.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(get.contains("200 OK"), "{get:?}");
+    let etag = get
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("etag:")
+                .then(|| line.split_once(':').unwrap().1.trim().to_string())
+        })
+        .expect("GET sin ETag");
+
+    let search = fixture.request(
+        "GET /api/search?q=palabra HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(
+        search.contains("nota.md"),
+        "la búsqueda omitió el archivo: {search:?}"
+    );
+
+    let put = fixture.request(
+        format!(
+            "PUT /api/file?path=nota.md&force=1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-Match: {etag}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            fixture.port
+        ),
+    );
+    assert!(
+        put.contains("204 No Content"),
+        "PUT If-Match falló: {put:?}"
+    );
+}
+
+#[test]
+fn files_sirve_binarios_byte_a_byte_y_markdown_sigue_intacto() {
+    let fixture = Fixture::new();
+    let png = [0x89, 0xFF, 0x00, 0x02, 0xC3, 0x28];
+    fs::write(fixture.root.join("blob.png"), png).unwrap();
+
+    let (headers, body) = fixture.request_bytes("/files/blob.png");
+    assert!(headers.contains("200 OK"), "{headers:?}");
+    assert_eq!(body, png, "el PNG salió corrupto");
+    assert!(
+        headers.to_lowercase().contains("content-type: image/png"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("content-security-policy: sandbox"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("x-content-type-options: nosniff"),
+        "{headers:?}"
+    );
+
+    let (_, md) = fixture.request_bytes("/files/index.md");
+    assert_eq!(md, b"# indice\n");
+}
+
+#[test]
+fn cuerpo_mayor_que_16mib_da_413() {
+    let fixture = Fixture::new();
+    let body = "x".repeat(16 * 1024 * 1024 + 1);
+    let answer = fixture.request(format!(
+        "PUT /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        fixture.port,
+        body.len()
+    ));
+    assert!(answer.contains("413"), "{answer:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("index.md")).unwrap(),
+        "# indice\n"
+    );
+}
+
+#[test]
+fn multimedia_sirve_range_y_head_con_cabeceras_de_seguridad() {
+    let fixture = Fixture::new();
+    let bytes: Vec<u8> = (0..100).collect();
+    fs::write(fixture.root.join("video.mp4"), &bytes).unwrap();
+
+    let request = format!(
+        "GET /files/video.mp4 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nRange: bytes=0-9\r\nConnection: close\r\n\r\n",
+        fixture.port
+    );
+    let (headers, body) = fixture.request_response(request);
+    assert!(headers.contains("206"), "{headers:?}");
+    assert!(
+        headers.to_lowercase().contains("content-type: video/mp4"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("content-security-policy: sandbox"),
+        "{headers:?}"
+    );
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("x-content-type-options: nosniff"),
+        "{headers:?}"
+    );
+    assert_eq!(body, bytes[..10]);
+
+    let request = format!(
+        "HEAD /files/video.mp4 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        fixture.port
+    );
+    let (headers, body) = fixture.request_response(request);
+    assert!(headers.contains("200 OK"), "{headers:?}");
+    assert!(
+        headers.to_lowercase().contains("content-type: video/mp4"),
+        "{headers:?}"
+    );
+    assert!(body.is_empty());
+}
+
+#[test]
+fn backlinks_responde_200_con_enlace_porcentaje_multibyte() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("source.md"), "[x](%aé.md)\n").unwrap();
+    let answer = fixture.request(
+        "GET /api/backlinks?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nConnection: close\r\n\r\n"
+            .replace("PORT", &fixture.port.to_string()),
+    );
+    assert!(
+        answer.contains("200 OK"),
+        "respuesta inesperada: {answer:?}"
+    );
 }
 
 #[test]
@@ -199,4 +425,177 @@ fn sigterm_closes_server_with_sse_client_open() {
     let exited = fixture.wait_exit(Duration::from_secs(5));
     let _ = stream.shutdown(std::net::Shutdown::Both);
     assert!(exited, "el servidor no cerró con un cliente SSE abierto");
+}
+
+fn get_request(fixture: &Fixture, path: &str) -> String {
+    fixture.request(format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        fixture.port
+    ))
+}
+
+#[test]
+fn mas_codificado_se_conserva_en_query() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("c++ notes.md"), "# cpp\n").unwrap();
+    fs::write(fixture.root.join("a b.md"), "# ab\n").unwrap();
+    fs::write(fixture.root.join("otra.md"), "solo c++ aqui\n").unwrap();
+
+    let get = get_request(&fixture, "/api/file?path=c%2B%2B%20notes.md");
+    assert!(get.contains("200 OK"), "{get:?}");
+
+    let plus = get_request(&fixture, "/api/file?path=a+b.md");
+    assert!(plus.contains("200 OK"), "{plus:?}");
+
+    let search = get_request(&fixture, "/api/search?q=c%2B%2B");
+    assert!(search.contains("otra.md"), "{search:?}");
+
+    // Un parámetro ajeno mal codificado no afecta al buscado...
+    let other = get_request(&fixture, "/api/file?x=%zz&path=index.md");
+    assert!(other.contains("200 OK"), "{other:?}");
+    // ...pero el propio parámetro inválido da 400.
+    let bad = get_request(&fixture, "/api/file?path=%zz");
+    assert!(bad.contains("400 Bad Request"), "{bad:?}");
+}
+
+#[test]
+fn guardar_no_utf8_exige_force_y_no_toca_el_disco() {
+    let fixture = Fixture::new();
+    let original = b"palabra \xE9\n";
+    fs::write(fixture.root.join("latin.md"), original).unwrap();
+    let put = |query: &str| {
+        fixture.request(format!(
+            "PUT /api/file?path=latin.md{query} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            fixture.port
+        ))
+    };
+
+    let denied = put("");
+    assert!(denied.contains("409"), "{denied:?}");
+    assert!(denied.contains("not-utf8"), "{denied:?}");
+    assert_eq!(fs::read(fixture.root.join("latin.md")).unwrap(), original);
+
+    let get = get_request(&fixture, "/api/file?path=latin.md");
+    assert!(get.contains("200 OK"), "{get:?}");
+    assert!(get.to_lowercase().contains("x-markvi-lossy: 1"), "{get:?}");
+
+    let forced = put("&force=1");
+    assert!(forced.contains("204"), "{forced:?}");
+    assert_eq!(fs::read(fixture.root.join("latin.md")).unwrap(), b"nuevo");
+
+    // UTF-8 normal: sin cabecera lossy y guardado sin force.
+    let ok = fixture.request(format!(
+        "PUT /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+        fixture.port
+    ));
+    assert!(ok.contains("204"), "{ok:?}");
+    let get = get_request(&fixture, "/api/file?path=index.md");
+    assert!(!get.to_lowercase().contains("x-markvi-lossy"), "{get:?}");
+}
+
+#[test]
+fn files_sirve_range_head_y_cabeceras_para_cualquier_tipo() {
+    let fixture = Fixture::new();
+    let bytes: Vec<u8> = (0..100).collect();
+    fs::write(fixture.root.join("clip.mov"), &bytes).unwrap();
+    fs::write(fixture.root.join("img.png"), &bytes).unwrap();
+
+    for name in ["clip.mov", "img.png"] {
+        let (headers, body) = fixture.request_response(format!(
+            "GET /files/{name} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nRange: bytes=0-9\r\nConnection: close\r\n\r\n",
+            fixture.port
+        ));
+        let lower = headers.to_lowercase();
+        assert!(headers.contains("206"), "{name}: {headers:?}");
+        assert!(
+            lower.contains("content-range: bytes 0-9/100"),
+            "{headers:?}"
+        );
+        assert!(
+            lower.contains("content-security-policy: sandbox"),
+            "{headers:?}"
+        );
+        assert!(
+            lower.contains("x-content-type-options: nosniff"),
+            "{headers:?}"
+        );
+        assert!(lower.contains("cache-control: no-store"), "{headers:?}");
+        assert_eq!(body, bytes[..10], "{name}");
+
+        let (headers, body) = fixture.request_response(format!(
+            "HEAD /files/{name} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            fixture.port
+        ));
+        assert!(headers.contains("200 OK"), "{name}: {headers:?}");
+        assert!(body.is_empty());
+    }
+    let (headers, body) = fixture.request_bytes("/files/img.png");
+    assert!(
+        headers.to_lowercase().contains("content-type: image/png"),
+        "{headers:?}"
+    );
+    assert_eq!(body, bytes);
+    let (headers, _) = fixture.request_bytes("/files/index.md");
+    assert!(
+        headers
+            .to_lowercase()
+            .contains("content-type: text/markdown"),
+        "{headers:?}"
+    );
+}
+
+#[test]
+fn put_create_sobre_archivo_existente_da_409_y_no_lo_pisa() {
+    let fixture = Fixture::new();
+    let put = |path: &str, query: &str| {
+        fixture.request(format!(
+            "PUT /api/file?path={path}{query} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nnuevo",
+            fixture.port
+        ))
+    };
+    let existing = put("index.md", "&create=1");
+    assert!(existing.contains("409"), "{existing:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("index.md")).unwrap(),
+        "# indice\n"
+    );
+
+    let created = put("fresco.md", "&create=1");
+    assert!(created.contains("204"), "{created:?}");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("fresco.md")).unwrap(),
+        "nuevo"
+    );
+}
+
+#[test]
+fn estaticos_responden_304_con_if_none_match() {
+    let fixture = Fixture::new();
+    let first = get_request(&fixture, "/");
+    assert!(first.contains("200 OK"), "{first:?}");
+    let etag = first
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("etag:")
+                .then(|| line.split_once(':').unwrap().1.trim().to_string())
+        })
+        .expect("index sin ETag");
+    let conditional = |etag: &str| {
+        fixture.request(format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nIf-None-Match: {etag}\r\nConnection: close\r\n\r\n",
+            fixture.port
+        ))
+    };
+    let cached = conditional(&etag);
+    assert!(cached.contains("304 Not Modified"), "{cached:?}");
+    assert!(
+        cached.to_lowercase().contains("cache-control:"),
+        "{cached:?}"
+    );
+    assert!(!cached.contains("<!doctype"), "304 con cuerpo");
+    let other = conditional("\"otro\"");
+    assert!(other.contains("200 OK"), "{other:?}");
+    let weak = conditional(&format!("W/{etag}, \"x\""));
+    assert!(weak.contains("304"), "{weak:?}");
 }
