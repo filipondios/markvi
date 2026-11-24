@@ -443,7 +443,7 @@ pub fn unique_paths(entries: &[MarkdownEntry]) -> Vec<String> {
     result
 }
 
-fn temp_path_for(target: &Path) -> PathBuf {
+pub(crate) fn temp_path_for(target: &Path) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut seed = [0u8; 6];
     if getrandom::fill(&mut seed).is_err() {

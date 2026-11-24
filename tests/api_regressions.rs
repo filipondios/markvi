@@ -599,3 +599,37 @@ fn estaticos_responden_304_con_if_none_match() {
     let weak = conditional(&format!("W/{etag}, \"x\""));
     assert!(weak.contains("304"), "{weak:?}");
 }
+
+/// Envía una petición con cuerpo binario y devuelve la respuesta como texto.
+fn send_with_body(fixture: &Fixture, head: &str, body: &[u8]) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write!(
+        stream,
+        "{head} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        fixture.port,
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+    String::from_utf8_lossy(&answer).into_owned()
+}
+
+#[test]
+fn cuerpo_no_utf8_da_400_y_no_toca_el_disco() {
+    let fixture = Fixture::new();
+    let original = fs::read(fixture.root.join("index.md")).unwrap();
+
+    let put = send_with_body(&fixture, "PUT /api/file?path=index.md", b"hola \xff\xfe");
+    assert!(put.contains("400"), "{put:?}");
+    assert!(put.contains("not valid UTF-8"), "{put:?}");
+    assert_eq!(fs::read(fixture.root.join("index.md")).unwrap(), original);
+
+    let post = send_with_body(&fixture, "POST /api/file?path=nuevo.md", b"\xff");
+    assert!(post.contains("400"), "{post:?}");
+    assert!(!fixture.root.join("nuevo.md").exists());
+}

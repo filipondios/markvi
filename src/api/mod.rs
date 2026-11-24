@@ -343,7 +343,8 @@ async fn body_string(req: Request) -> Result<String, ApiError> {
     let bytes = to_bytes(req.into_body(), MAX_BODY)
         .await
         .map_err(|_| too_large())?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| ApiError::new(400, "The body is not valid UTF-8."))
 }
 
 async fn markdown_file(state: &AppState, path: Option<String>) -> Result<PathBuf, ApiError> {
@@ -448,15 +449,24 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
     let result = tokio::spawn(async move {
         let key = fs::lock_key(&file).await;
         fs::with_file_lock(&locks, &key, async move {
+            // Una sola lectura: sirve para el ETag y para saber si el archivo es UTF-8.
+            let read = if if_match.is_some() || !force {
+                Some(tokio::fs::read(&file).await)
+            } else {
+                None
+            };
             if let Some(if_match) = if_match {
-                let current = match fs::read_lossy(&file).await {
-                    Ok(text) => text,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let bytes = match &read {
+                    Some(Ok(bytes)) => bytes,
+                    Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                         return Err(ApiError::new(404, "File not found."));
                     }
-                    Err(error) => return Err(error.into()),
+                    Some(Err(error)) => {
+                        return Err(std::io::Error::new(error.kind(), error.to_string()).into());
+                    }
+                    None => unreachable!("con If-Match siempre se lee"),
                 };
-                let etag = hash::etag(&current);
+                let etag = hash::etag(&String::from_utf8_lossy(bytes));
                 if if_match != "*" && if_match != etag {
                     return Ok(Some(json_response(
                         409,
@@ -475,7 +485,7 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
             } else if tokio::fs::metadata(&file).await.is_err() {
                 return Err(ApiError::new(404, "File not found."));
             }
-            if !force && matches!(fs::is_valid_utf8(&file).await, Ok(false)) {
+            if !force && matches!(&read, Some(Ok(bytes)) if std::str::from_utf8(bytes).is_err()) {
                 return Ok(Some(json_response(
                     409,
                     json!({
@@ -661,7 +671,7 @@ async fn link_or_rename(
                     ))
                 }
             }
-            tokio::fs::rename(entry, target).await?;
+            rename_or_copy(entry, target, tokio::fs::rename(entry, target).await).await?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(ApiError::new(
@@ -670,6 +680,55 @@ async fn link_or_rename(
             ));
         }
         Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn is_cross_device(error: &std::io::Error) -> bool {
+    // EXDEV es 18 en Linux y macOS (`ErrorKind::CrossesDevices` exige Rust 1.85).
+    cfg!(any(target_os = "linux", target_os = "macos")) && error.raw_os_error() == Some(18)
+}
+
+/// Resultado de `rename(entry, target)`. Si cruza dispositivos (EXDEV), copia a un
+/// temporal junto al destino, lo publica sin pisar nada y borra el origen.
+async fn rename_or_copy(
+    entry: &Path,
+    target: &Path,
+    renamed: std::io::Result<()>,
+) -> Result<(), ApiError> {
+    match renamed {
+        Ok(()) => Ok(()),
+        Err(error) if is_cross_device(&error) => copy_move(entry, target).await,
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn copy_move(entry: &Path, target: &Path) -> Result<(), ApiError> {
+    let exists = || ApiError::new(409, "A file or folder already exists at that path.");
+    let temp = fs::temp_path_for(target);
+    if let Err(error) = tokio::fs::copy(entry, &temp).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(error.into());
+    }
+    let published = match tokio::fs::hard_link(&temp, target).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(exists()),
+        Err(error) if fs::hard_link_unsupported(&error) => {
+            // Sin enlaces duros: rename dentro del mismo directorio, con destino libre.
+            if tokio::fs::symlink_metadata(target).await.is_ok() {
+                Err(exists())
+            } else {
+                tokio::fs::rename(&temp, target).await.map_err(ApiError::from)
+            }
+        }
+        Err(error) => Err(error.into()),
+    };
+    let _ = tokio::fs::remove_file(&temp).await;
+    published?;
+    if let Err(error) = tokio::fs::remove_file(entry).await {
+        // No dejar el archivo duplicado: se retira la copia recién publicada.
+        let _ = tokio::fs::remove_file(target).await;
+        return Err(error.into());
     }
     Ok(())
 }
@@ -973,6 +1032,42 @@ mod tests {
         std::fs::write(&target, "destino").unwrap();
         let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
         let error = link_or_rename(&source, &target, Err(unsupported))
+            .await
+            .unwrap_err();
+        assert_eq!(status(error), 409);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "destino");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
+    }
+
+    #[tokio::test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn mover_entre_dispositivos_copia_y_borra_el_origen() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, b"contenido \xff binario").unwrap();
+        let exdev = std::io::Error::from_raw_os_error(18);
+        rename_or_copy(&source, &target, Err(exdev)).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"contenido \xff binario");
+        assert!(!source.exists());
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "quedó un temporal");
+    }
+
+    #[tokio::test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn mover_entre_dispositivos_no_pisa_un_destino_existente() {
+        let dir = Temp::new();
+        let source = dir.path().join("a.md");
+        let target = dir.path().join("b.md");
+        std::fs::write(&source, "origen").unwrap();
+        std::fs::write(&target, "destino").unwrap();
+        let exdev = std::io::Error::from_raw_os_error(18);
+        let error = rename_or_copy(&source, &target, Err(exdev))
             .await
             .unwrap_err();
         assert_eq!(status(error), 409);
