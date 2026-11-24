@@ -333,6 +333,23 @@ async function main() {
         await page.waitForSelector("#content h1");
         assert((await page.evaluate(() => document.documentElement.dataset.theme)) === "dark", "tema dark no persiste tras refresh");
       });
+      await check("bloques de código y tablas siguen el tema oscuro", async () => {
+        await gotoView(page, base, "markdown-basics.md");
+        const code = await page.evaluate(() => {
+          const style = getComputedStyle(document.querySelector("#content pre.code-block"));
+          const text = getComputedStyle(document.querySelector("#content pre code"));
+          return [style.backgroundColor, text.color].map((value) =>
+            value.match(/\d+/g).slice(0, 3).reduce((sum, n) => sum + Number(n), 0),
+          );
+        });
+        assert(code[0] < 200 && code[1] > 500, `bloque de código claro en tema oscuro: ${code}`);
+        await gotoView(page, base, "index.md");
+        const rule = await page.evaluate(() =>
+          getComputedStyle(document.querySelector("#content thead")).borderTopColor,
+        );
+        const brightness = rule.match(/\d+/g).slice(0, 3).reduce((sum, n) => sum + Number(n), 0);
+        assert(brightness < 500, `borde de tabla demasiado claro: ${rule}`);
+      });
       await check("sin errores de página con tema oscuro", async () => {
         assert(errors.length === 0, errors.join(" | "));
       });

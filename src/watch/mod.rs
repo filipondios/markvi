@@ -35,6 +35,9 @@ const RECONCILE_COALESCE_MS: u64 = 25;
 pub enum DiskEventKind {
     Change,
     Delete,
+    /// El watcher perdió eventos (desbordamiento de inotify): los clientes deben
+    /// reconsultar. Se emite al cliente como evento SSE `resync`, nunca como dato.
+    Resync,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -46,7 +49,7 @@ pub struct DiskEvent {
 
 enum Input {
     Notify(notify::Result<NotifyEvent>),
-    Init(Vec<MarkdownEntry>),
+    Init,
     FileTimer(String),
     DirTimer(String),
     Reconcile,
@@ -59,6 +62,7 @@ pub struct FileWatcher {
     stop: Option<oneshot::Sender<()>>,
     pending_timers: Arc<AtomicUsize>,
     reconciles: Arc<AtomicUsize>,
+    input: mpsc::UnboundedSender<Input>,
 }
 
 impl FileWatcher {
@@ -80,12 +84,8 @@ impl FileWatcher {
             }
         };
 
-        let init_root = root.to_path_buf();
-        let init_events = event_tx.clone();
-        tokio::spawn(async move {
-            let entries = fs::list_markdown_entries(&init_root).await;
-            let _ = init_events.send(Input::Init(entries));
-        });
+        let _ = event_tx.send(Input::Init);
+        let input_tx = event_tx.clone();
 
         let root = root.to_path_buf();
         let tx = hub_tx.clone();
@@ -99,7 +99,7 @@ impl FileWatcher {
             let mut known: HashSet<String> = HashSet::new();
             let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
             let mut timers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
-            let mut watched: HashSet<PathBuf> = HashSet::new();
+            let mut watches = WatchState::default();
             let mut reconcile_timer: Option<tokio::task::JoinHandle<()>> = None;
 
             let emit = |event: DiskEvent, tx: &broadcast::Sender<DiskEvent>| {
@@ -115,12 +115,16 @@ impl FileWatcher {
                     input = event_rx.recv() => match input { Some(input) => input, None => break },
                 };
                 match input {
-                    Input::Init(entries) => {
-                        for entry in &entries {
+                    Input::Init => {
+                        // Primero se registran los watches y después se toma la
+                        // instantánea: un cambio durante el arranque no se pierde.
+                        let first = fs::walk_tree(&root).await;
+                        register_watches(&loop_watcher, &first.dirs, &mut watches).await;
+                        let walk = fs::walk_tree(&root).await;
+                        for entry in &walk.entries {
                             known.insert(entry.path.clone());
                         }
-                        index_aliases(&mut aliases, &entries);
-                        watch_dirs(&loop_watcher, &root, &mut watched).await;
+                        index_aliases(&mut aliases, &walk.entries);
                     }
                     Input::Notify(result) => {
                         let event = match result {
@@ -130,6 +134,20 @@ impl FileWatcher {
                                 continue;
                             }
                         };
+                        if event.need_rescan() {
+                            // IN_Q_OVERFLOW: se perdieron eventos y no hay rutas.
+                            // Reconciliar detecta altas/bajas; el resync cubre las
+                            // modificaciones de archivos ya conocidos.
+                            request_reconcile(&mut reconcile_timer, &event_tx);
+                            emit(
+                                DiskEvent {
+                                    kind: DiskEventKind::Resync,
+                                    path: String::new(),
+                                },
+                                &tx,
+                            );
+                            continue;
+                        }
                         if matches!(event.kind, notify::EventKind::Access(_)) {
                             continue;
                         }
@@ -212,7 +230,7 @@ impl FileWatcher {
                             &tx,
                             &emit,
                             &loop_watcher,
-                            &mut watched,
+                            &mut watches,
                             &loop_reconciles,
                         )
                         .await;
@@ -235,7 +253,15 @@ impl FileWatcher {
             stop: Some(stop_tx),
             pending_timers,
             reconciles,
+            input: input_tx,
         }
+    }
+
+    /// Simula el aviso de desbordamiento de inotify (solo para tests).
+    #[doc(hidden)]
+    pub fn inject_rescan(&self) {
+        let event = NotifyEvent::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        let _ = self.input.send(Input::Notify(Ok(event)));
     }
 
     /// Reconciliaciones completas ejecutadas (recorrido del árbol + diff de archivos).
@@ -327,55 +353,81 @@ fn request_reconcile(
     }));
 }
 
-/// Vigila solo los directorios visibles, uno a uno (sin `Recursive` sobre el root).
-/// Re-registra todos en cada pasada (idempotente en inotify): un directorio
-/// borrado y recreado, o renombrado, pierde su watch en el kernel y las rutas
-/// ya conocidas no bastan para saberlo. Los que ya no existen se descartan.
-async fn watch_dirs(
-    watcher: &Arc<Mutex<Option<notify::RecommendedWatcher>>>,
-    root: &Path,
-    watched: &mut HashSet<PathBuf>,
-) {
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
+/// Directorios vigilados y los que fallaron por el límite del SO.
+#[derive(Default)]
+struct WatchState {
+    watched: HashSet<PathBuf>,
+    failed: HashSet<PathBuf>,
+    /// Último recuento avisado; evita repetir la misma línea.
+    reported: usize,
+}
+
+fn is_not_found(error: &notify::Error) -> bool {
+    matches!(error.kind, notify::ErrorKind::PathNotFound)
+        || matches!(&error.kind, notify::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Re-registra todos los directorios (idempotente en inotify: un directorio
+/// borrado y recreado pierde su watch en el kernel) y descarta los que ya no
+/// existen. Devuelve, como mucho, un aviso por cambio en el recuento de fallos.
+fn apply_watches(
+    state: &mut WatchState,
+    dirs: &[PathBuf],
+    mut watch: impl FnMut(&Path) -> notify::Result<()>,
+    mut unwatch: impl FnMut(&Path),
+) -> Option<String> {
+    let mut seen: HashSet<PathBuf> = HashSet::with_capacity(dirs.len());
+    let mut failed: HashSet<PathBuf> = HashSet::new();
+    for dir in dirs {
         if !seen.insert(dir.clone()) {
             continue;
         }
-        {
-            let mut guard = watcher.lock().await;
-            if let Some(watcher) = guard.as_mut() {
-                if let Err(error) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
-                    let vanished = matches!(error.kind, notify::ErrorKind::PathNotFound)
-                        || matches!(&error.kind, notify::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound);
-                    if !vanished {
-                        eprintln!("Could not watch the directory: {error}");
-                    }
-                }
-            }
-        }
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if !fs::is_ignored(&entry.file_name().to_string_lossy())
-                && entry.file_type().await.is_ok_and(|kind| kind.is_dir())
-            {
-                pending.push(entry.path());
+        if let Err(error) = watch(dir) {
+            if !is_not_found(&error) {
+                failed.insert(dir.clone());
             }
         }
     }
-    let stale: Vec<PathBuf> = watched.difference(&seen).cloned().collect();
-    if !stale.is_empty() {
-        let mut guard = watcher.lock().await;
-        if let Some(watcher) = guard.as_mut() {
-            for dir in stale {
-                let _ = watcher.unwatch(&dir);
-            }
-        }
+    for dir in state.watched.difference(&seen) {
+        unwatch(dir);
     }
-    *watched = seen;
+    state.watched = seen;
+    state.failed = failed;
+    let count = state.failed.len();
+    if count == state.reported {
+        return None;
+    }
+    state.reported = count;
+    (count > 0).then(|| {
+        format!(
+            "{count} directories could not be watched (OS limit). Raise fs.inotify.max_user_watches."
+        )
+    })
+}
+
+async fn register_watches(
+    watcher: &Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    dirs: &[PathBuf],
+    state: &mut WatchState,
+) {
+    let mut guard = watcher.lock().await;
+    let Some(watcher) = guard.as_mut() else {
+        return;
+    };
+    let warning = {
+        let cell = std::cell::RefCell::new(&mut *watcher);
+        apply_watches(
+            state,
+            dirs,
+            |dir| cell.borrow_mut().watch(dir, RecursiveMode::NonRecursive),
+            |dir| {
+                let _ = cell.borrow_mut().unwatch(dir);
+            },
+        )
+    };
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -386,14 +438,15 @@ async fn reconcile<F>(
     tx: &broadcast::Sender<DiskEvent>,
     emit: &F,
     watcher: &Arc<Mutex<Option<notify::RecommendedWatcher>>>,
-    watched: &mut HashSet<PathBuf>,
+    watches: &mut WatchState,
     counter: &AtomicUsize,
 ) where
     F: Fn(DiskEvent, &broadcast::Sender<DiskEvent>),
 {
     counter.fetch_add(1, Ordering::Relaxed);
-    watch_dirs(watcher, root, watched).await;
-    let entries = fs::list_markdown_entries(root).await;
+    let walk = fs::walk_tree(root).await;
+    register_watches(watcher, &walk.dirs, watches).await;
+    let entries = walk.entries;
     index_aliases(aliases, &entries);
     let current: HashSet<String> = entries.iter().map(|entry| entry.path.clone()).collect();
     let mut missing: Vec<String> = known.difference(&current).cloned().collect();
@@ -537,6 +590,9 @@ impl Stream for EventStream {
             return Poll::Ready(None);
         }
         match Pin::new(&mut self.events).poll_next(cx) {
+            Poll::Ready(Some(Ok(event))) if event.kind == DiskEventKind::Resync => {
+                return Poll::Ready(Some(Ok(Event::default().event("resync").data("{}"))));
+            }
             Poll::Ready(Some(Ok(event))) => {
                 let json = serde_json::to_string(&event).expect("serializable event");
                 return Poll::Ready(Some(Ok(Event::default().data(json))));
@@ -594,27 +650,6 @@ pub fn install_shutdown_signals() -> impl std::future::Future<Output = ()> + Sen
     }
 }
 
-pub async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signals) => {
-                signals.recv().await;
-            }
-            Err(_) => std::future::pending::<()>().await,
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +658,62 @@ mod tests {
         response::{sse::Sse, IntoResponse},
     };
     use futures_util::StreamExt;
+
+    fn limit_error() -> notify::Error {
+        notify::Error::new(notify::ErrorKind::MaxFilesWatch)
+    }
+
+    #[test]
+    fn limite_avisa_una_sola_vez_en_varias_pasadas() {
+        let dirs: Vec<PathBuf> = (0..100).map(|i| PathBuf::from(format!("/v/d{i}"))).collect();
+        let mut state = WatchState::default();
+        let mut lines = 0;
+        for _ in 0..5 {
+            if apply_watches(&mut state, &dirs, |_| Err(limit_error()), |_| {}).is_some() {
+                lines += 1;
+            }
+        }
+        assert_eq!(lines, 1);
+        // Si el recuento cambia, se avisa de nuevo.
+        let fewer = &dirs[..50];
+        assert!(apply_watches(&mut state, fewer, |_| Err(limit_error()), |_| {}).is_some());
+    }
+
+    #[test]
+    fn path_not_found_no_cuenta_como_fallo() {
+        let dirs = vec![PathBuf::from("/v/a")];
+        let mut state = WatchState::default();
+        let warning = apply_watches(
+            &mut state,
+            &dirs,
+            |_| Err(notify::Error::path_not_found()),
+            |_| {},
+        );
+        assert!(warning.is_none());
+        assert!(state.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rescan_emite_resync_y_reconcilia() {
+        let temp = std::env::temp_dir().join(format!("markvi-rescan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(temp.join("a.md"), "a").unwrap();
+        let mut watcher = FileWatcher::new(&temp);
+        let mut events = watcher.subscribe();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let before = watcher.reconcile_count();
+        watcher.inject_rescan();
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("sin evento")
+            .unwrap();
+        assert_eq!(event.kind, DiskEventKind::Resync);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(watcher.reconcile_count() > before);
+        watcher.close();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
 
     #[tokio::test]
     async fn timers_vuelven_a_cero_tras_el_reposo() {
