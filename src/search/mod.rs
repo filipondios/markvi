@@ -125,10 +125,8 @@ fn literal_ranges(
         if !line.contains(query) {
             return Vec::new();
         }
-    } else if query.is_ascii() {
-        if !contains_ascii_ci(line, query) {
-            return Vec::new();
-        }
+    } else if query.is_ascii() && !contains_ascii_ci(line, query) {
+        return Vec::new();
     }
     // ASCII: byte offset == UTF-16 offset, sin char_indices ni Vec<char>.
     if line.is_ascii() && query.is_ascii() {
@@ -417,38 +415,51 @@ fn may_have_links(line: &str) -> bool {
 }
 
 /// Sustituye por espacios el código en línea, conservando longitudes UTF-16.
+///
+/// El cierre válido de una apertura de `ticks` acentos graves es la primera
+/// tirada posterior con longitud `>= ticks` (la regex TS exige que el
+/// delimitador no tenga más acentos graves a continuación). Las tiradas se
+/// calculan en una pasada; `min_failed` recuerda la menor apertura sin cierre,
+/// porque cualquier apertura mayor tampoco lo tendrá. Sin esto, cada apertura
+/// sin cierre reescaneaba hasta el final de la línea (cuadrático).
 fn mask_inline_code(line: &str) -> String {
+    let tick = b'`' as u16;
     let units: Vec<u16> = line.encode_utf16().collect();
-    let mut masked = units.clone();
-    let mut cursor = 0;
-    while cursor < units.len() {
-        if units[cursor] != b'`' as u16 {
-            cursor += 1;
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0;
+    while at < units.len() {
+        if units[at] == tick {
+            let start = at;
+            while at < units.len() && units[at] == tick {
+                at += 1;
+            }
+            runs.push((start, at - start));
+        } else {
+            at += 1;
+        }
+    }
+    let mut masked = units;
+    let mut min_failed = usize::MAX;
+    let mut index = 0;
+    while index < runs.len() {
+        let (start, ticks) = runs[index];
+        if ticks >= min_failed {
+            index += 1;
             continue;
         }
-        let mut ticks = 1;
-        while cursor + ticks < units.len() && units[cursor + ticks] == b'`' as u16 {
-            ticks += 1;
-        }
-        // La regex TS exige que el delimitador de cierre no tenga más acentos graves.
-        let mut end = cursor + ticks;
-        let mut found = None;
-        while end + ticks <= units.len() {
-            if units[end..end + ticks].iter().all(|u| *u == b'`' as u16)
-                && (end + ticks >= units.len() || units[end + ticks] != b'`' as u16)
-            {
-                found = Some(end + ticks);
-                break;
+        match runs[index + 1..].iter().position(|&(_, len)| len >= ticks) {
+            Some(offset) => {
+                let close = index + 1 + offset;
+                let end = runs[close].0 + runs[close].1;
+                for unit in &mut masked[start..end] {
+                    *unit = b' ' as u16;
+                }
+                index = close + 1;
             }
-            end += 1;
-        }
-        if let Some(close) = found {
-            for unit in masked.iter_mut().take(close).skip(cursor) {
-                *unit = b' ' as u16;
+            None => {
+                min_failed = ticks;
+                index += 1;
             }
-            cursor = close;
-        } else {
-            cursor += ticks;
         }
     }
     String::from_utf16_lossy(&masked)
@@ -713,7 +724,79 @@ pub async fn search_backlinks(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_percent;
+    fn mask_inline_code_reference(line: &str) -> String {
+        let units: Vec<u16> = line.encode_utf16().collect();
+        let mut masked = units.clone();
+        let mut cursor = 0;
+        while cursor < units.len() {
+            if units[cursor] != b'`' as u16 {
+                cursor += 1;
+                continue;
+            }
+            let mut ticks = 1;
+            while cursor + ticks < units.len() && units[cursor + ticks] == b'`' as u16 {
+                ticks += 1;
+            }
+            // La regex TS exige que el delimitador de cierre no tenga más acentos graves.
+            let mut end = cursor + ticks;
+            let mut found = None;
+            while end + ticks <= units.len() {
+                if units[end..end + ticks].iter().all(|u| *u == b'`' as u16)
+                    && (end + ticks >= units.len() || units[end + ticks] != b'`' as u16)
+                {
+                    found = Some(end + ticks);
+                    break;
+                }
+                end += 1;
+            }
+            if let Some(close) = found {
+                for unit in masked.iter_mut().take(close).skip(cursor) {
+                    *unit = b' ' as u16;
+                }
+                cursor = close;
+            } else {
+                cursor += ticks;
+            }
+        }
+        String::from_utf16_lossy(&masked)
+    }
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    #[test]
+    fn mask_inline_code_equivale_a_la_referencia() {
+        let mut seed = 42;
+        let alphabet = ['`', '`', '`', 'a', ' ', '[', 'é', '😀'];
+        for _ in 0..2000 {
+            let len = (lcg(&mut seed) % 60) as usize;
+            let line: String = (0..len)
+                .map(|_| alphabet[(lcg(&mut seed) % alphabet.len() as u64) as usize])
+                .collect();
+            assert_eq!(
+                mask_inline_code(&line),
+                mask_inline_code_reference(&line),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "umbral de tiempo solo en release")]
+    fn mask_inline_code_adversarial_es_lineal() {
+        let mut line = String::from("[[");
+        for ticks in (1..=1900).rev() {
+            line.push_str(&"`".repeat(ticks));
+            line.push(' ');
+        }
+        assert!(line.len() > 1_800_000);
+        let start = std::time::Instant::now();
+        let _ = mask_inline_code(&line);
+        assert!(start.elapsed() < std::time::Duration::from_millis(200), "{:?}", start.elapsed());
+    }
+    use super::{decode_percent, mask_inline_code};
 
     #[test]
     fn decode_percent_no_panica_con_multibyte_y_deja_literal_invalido() {
