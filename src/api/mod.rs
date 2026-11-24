@@ -539,24 +539,30 @@ pub async fn file_delete(
         return Err(ApiError::new(400, "Only .md files are supported."));
     }
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
-    fs::with_file_lock(&state.locks, &fs::lock_key(&real).await, async {
-        if let Some(if_match) = if_match {
-            if if_match != "*" {
-                let content = fs::read_lossy(&real).await?;
-                let etag = hash::etag(&content);
-                if if_match != etag {
-                    return Ok(json_response(
-                        409,
-                        json!({ "error": "The file changed on disk.", "etag": etag }),
-                        NO_STORE,
-                    ));
+    // En una tarea propia: si el cliente corta, el borrado no se interrumpe a medias.
+    let locks = state.locks.clone();
+    tokio::spawn(async move {
+        fs::with_file_lock(&locks, &fs::lock_key(&real).await, async {
+            if let Some(if_match) = if_match {
+                if if_match != "*" {
+                    let content = fs::read_lossy(&real).await?;
+                    let etag = hash::etag(&content);
+                    if if_match != etag {
+                        return Ok(json_response(
+                            409,
+                            json!({ "error": "The file changed on disk.", "etag": etag }),
+                            NO_STORE,
+                        ));
+                    }
                 }
             }
-        }
-        tokio::fs::remove_file(&entry).await?;
-        Ok(empty_response(204, None))
+            tokio::fs::remove_file(&entry).await?;
+            Ok(empty_response(204, None))
+        })
+        .await
     })
     .await
+    .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
 /// Crea los directorios padre de `file` que falten y devuelve los creados
@@ -683,18 +689,23 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     // Desviación A-019: bloquear también el destino para dos moves concurrentes.
     let mut keys = [fs::lock_key(&real).await, fs::lock_key(&target).await];
     keys.sort();
-    let locks_first = state.locks.clone();
-    let locks_second = state.locks.clone();
+    let locks = state.locks.clone();
     let first = keys[0].clone();
     let second = keys[1].clone();
-    fs::with_file_lock(&locks_first, &first, async move {
-        fs::with_file_lock(&locks_second, &second, async move {
-            move_with_parents(&real, &entry, &target).await?;
-            Ok(empty_response(204, None))
+    // En una tarea propia: si el cliente corta entre `hard_link` y `remove_file`
+    // (o tras crear los padres) no quedaría el archivo duplicado ni carpetas vacías.
+    tokio::spawn(async move {
+        fs::with_file_lock(&locks, &first, async {
+            fs::with_file_lock(&locks, &second, async {
+                move_with_parents(&real, &entry, &target).await?;
+                Ok(empty_response(204, None))
+            })
+            .await
         })
         .await
     })
     .await
+    .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
 pub async fn events_get(

@@ -53,7 +53,15 @@ async fn main() {
         Err(error) => fail(&error.to_string()),
     };
 
-    let env: Vec<(String, String)> = std::env::vars().collect();
+    // `vars()` entra en pánico si alguna variable no es UTF-8.
+    let env: Vec<(String, String)> = std::env::vars_os()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
     let config_path = config::resolve_config_path(args.config.as_deref(), &env);
 
     let watcher = FileWatcher::new(&root);
