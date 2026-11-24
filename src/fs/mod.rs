@@ -288,7 +288,11 @@ fn walk(real_root: &Path, root_dir: &Path, out: &mut Walk) {
         }
         let mut names = Vec::new();
         for entry in reader.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
+            // Un nombre que no es UTF-8 válido no se puede direccionar por la API
+            // (la URL no lo representa): se omite, y con él su subárbol si es dir.
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
             if !is_ignored(&name) {
                 names.push((name, entry));
             }

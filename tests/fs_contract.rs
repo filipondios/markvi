@@ -461,3 +461,21 @@ async fn unreadable_config_is_not_reported_as_missing() {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nombres_no_utf8_se_omiten_del_listado() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    let temp = Temp::new();
+    temp.write("ok.md", "ok");
+    temp.write("sub/dentro.md", "x");
+    // `café.md` en latin-1: no es direccionable por la API (daría 404).
+    std::fs::write(temp.path().join(OsStr::from_bytes(b"caf\xe9.md")), "x").unwrap();
+    // Un directorio no UTF-8 se omite con todo su subárbol.
+    let bad_dir = temp.path().join(OsStr::from_bytes(b"d\xffir"));
+    std::fs::create_dir(&bad_dir).unwrap();
+    std::fs::write(bad_dir.join("hijo.md"), "x").unwrap();
+
+    let listed = fs::list_markdown(temp.path()).await;
+    assert_eq!(listed, vec!["ok.md".to_string(), "sub/dentro.md".to_string()]);
+}
