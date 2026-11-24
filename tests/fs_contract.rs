@@ -1,5 +1,5 @@
-//! Contratos de filesystem y configuración del producto.
-//! Todo corre sobre directorios temporales; `example/` nunca se escribe.
+//! Filesystem and configuration contracts.
+//! Everything runs in temporary directories; `example/` is never written.
 use markvi_server::{
     config,
     core::pure,
@@ -327,7 +327,7 @@ fn config_defaults_validation_and_path_precedence() {
     assert_eq!(config::parse_sequence("abcde"), None);
     assert_eq!(config::parse_sequence("\u{feff}"), None);
 
-    // `TS .length` cuenta UTF-16, no bytes: 40 CJK deben caber en el límite 64.
+    // JS `.length` counts UTF-16 units, not bytes: 40 CJK fit in the 64-unit limit.
     let lhs = "日".repeat(40);
     let rhs = "語".repeat(40);
     let text = format!("[keymap.normal]\n\"{lhs}\" = \"{rhs}\"\n");
@@ -377,7 +377,7 @@ async fn config_sin_home_no_carga_nada_ni_toca_tmp() {
     assert_eq!(loaded.warnings.len(), 1);
     assert!(loaded.warnings[0].contains("HOME"), "{:?}", loaded.warnings);
 
-    // Con HOME o con el home del sistema sigue resolviéndose bajo ~/.config.
+    // With HOME or the system home it still resolves under ~/.config.
     let env = vec![("HOME".to_string(), "/home/u".to_string())];
     assert_eq!(
         config::resolve_config_path_with_home(None, &env, None),
@@ -440,7 +440,7 @@ async fn config_con_nombre_no_utf8_se_carga() {
 
 #[tokio::test]
 async fn unreadable_config_is_not_reported_as_missing() {
-    // root puede leer archivos con modo 000.
+    // root can read files with mode 000.
     if euid() == Some(0) {
         return;
     }
@@ -469,9 +469,9 @@ async fn nombres_no_utf8_se_omiten_del_listado() {
     let temp = Temp::new();
     temp.write("ok.md", "ok");
     temp.write("sub/dentro.md", "x");
-    // `café.md` en latin-1: no es direccionable por la API (daría 404).
+    // Latin-1 `café.md`: not addressable through the API (would return 404).
     std::fs::write(temp.path().join(OsStr::from_bytes(b"caf\xe9.md")), "x").unwrap();
-    // Un directorio no UTF-8 se omite con todo su subárbol.
+    // A non-UTF-8 directory is skipped along with its subtree.
     let bad_dir = temp.path().join(OsStr::from_bytes(b"d\xffir"));
     std::fs::create_dir(&bad_dir).unwrap();
     std::fs::write(bad_dir.join("hijo.md"), "x").unwrap();

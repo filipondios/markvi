@@ -1,4 +1,4 @@
-//! Regresiones de API HTTP sobre copias temporales del directorio de notas.
+//! HTTP API regressions against temporary copies of the notes directory.
 use std::{
     fs,
     io::{Read, Write},
@@ -10,7 +10,7 @@ use std::{
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
-/// Evita que dos fixtures elijan el mismo puerto libre al crearlos en paralelo.
+/// Serializes fixture creation so parallel tests cannot pick the same free port.
 static PORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct Fixture {
@@ -80,7 +80,7 @@ impl Fixture {
         answer
     }
 
-    /// Devuelve (cabeceras, cuerpo) sin pasar el cuerpo por UTF-8.
+    /// Returns headers and body without decoding the body as UTF-8.
     fn request_bytes(&self, path: &str) -> (String, Vec<u8>) {
         self.request_response(format!(
             "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
@@ -368,8 +368,8 @@ fn conflicting_if_match_writes_have_one_winner() {
         })
         .expect("ETag en GET /api/file");
 
-    // Se envían todas las peticiones antes de leerlas para que el servidor las
-    // procese en paralelo sobre el mismo archivo y con el mismo ETag.
+    // Send every request before reading responses so the server handles them
+    // concurrently on the same file with the same ETag.
     let mut streams = Vec::new();
     for i in 0..20 {
         let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
@@ -450,10 +450,10 @@ fn mas_codificado_se_conserva_en_query() {
     let search = get_request(&fixture, "/api/search?q=c%2B%2B");
     assert!(search.contains("otra.md"), "{search:?}");
 
-    // Un parámetro ajeno mal codificado no afecta al buscado...
+    // A badly encoded unrelated parameter does not affect the requested one...
     let other = get_request(&fixture, "/api/file?x=%zz&path=index.md");
     assert!(other.contains("200 OK"), "{other:?}");
-    // ...pero el propio parámetro inválido da 400.
+    // ...but an invalid parameter of interest still yields 400.
     let bad = get_request(&fixture, "/api/file?path=%zz");
     assert!(bad.contains("400 Bad Request"), "{bad:?}");
 }
@@ -483,7 +483,7 @@ fn guardar_no_utf8_exige_force_y_no_toca_el_disco() {
     assert!(forced.contains("204"), "{forced:?}");
     assert_eq!(fs::read(fixture.root.join("latin.md")).unwrap(), b"nuevo");
 
-    // UTF-8 normal: sin cabecera lossy y guardado sin force.
+    // Valid UTF-8: no lossy header and no forced save.
     let ok = fixture.request(format!(
         "PUT /api/file?path=index.md HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
         fixture.port
@@ -600,7 +600,7 @@ fn estaticos_responden_304_con_if_none_match() {
     assert!(weak.contains("304"), "{weak:?}");
 }
 
-/// Envía una petición con cuerpo binario y devuelve la respuesta como texto.
+/// Sends a request with a binary body and returns the response as text.
 fn send_with_body(fixture: &Fixture, head: &str, body: &[u8]) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
     stream

@@ -1,4 +1,4 @@
-//! Rendimiento de los recorridos de árbol con muchos directorios (solo release).
+//! Tree walk performance with many directories (release only).
 use markvi_server::{fs, watch::FileWatcher};
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,7 @@ fn make_vault(dirs: usize, name: &str) -> std::path::PathBuf {
 #[cfg_attr(debug_assertions, ignore = "umbral de tiempo solo en release")]
 async fn listar_4000_directorios_es_rapido() {
     let root = make_vault(4000, "walk-perf");
-    // Calentamiento de la caché de directorios.
+    // Warm up the directory cache.
     let _ = fs::list_markdown_entries(&root).await;
     let start = Instant::now();
     let entries = fs::list_markdown_entries(&root).await;

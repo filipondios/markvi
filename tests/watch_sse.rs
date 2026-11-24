@@ -1,4 +1,4 @@
-//! Watcher y SSE: eventos reales, heartbeat, reconexión, cancelación y señales.
+//! Watcher and SSE: real events, heartbeat, reconnection, cancellation, signals.
 use axum::{extract::State, response::sse::Sse, routing::get, Router};
 use markvi_server::watch::{self, DiskEvent, DiskEventKind, FileWatcher, SseHub};
 use std::{
@@ -75,8 +75,8 @@ async fn watcher_emite_la_segunda_escritura_separada_100ms() {
     let _ = collect(&mut events, 50).await;
 
     temp.write("dos.md", "v1");
-    // La segunda escritura cae ~100 ms después de la primera: dentro del
-    // debounce de 80 ms por ruta, pero también dentro del viejo dedupe de 150 ms.
+    // The second write lands ~100 ms after the first: inside the 80 ms
+    // per-path debounce and also inside the old 150 ms dedupe window.
     tokio::time::sleep(Duration::from_millis(100)).await;
     temp.write("dos.md", "v2");
 
@@ -108,7 +108,7 @@ async fn watcher_create_modify_rename_remove_and_burst() {
         burst.contains(&event("nuevo.md", DiskEventKind::Change)),
         "{burst:?}"
     );
-    // `fs::write` no es atómico: crear y cerrar pueden llegar como dos eventos.
+    // `fs::write` is not atomic: create and close may arrive as two events.
     let changes = burst.iter().filter(|e| e.path == "nuevo.md").count();
     assert!((1..=3).contains(&changes), "ráfaga inesperada: {burst:?}");
 
@@ -242,7 +242,7 @@ async fn sse_streams_events_heartbeat_reconnect_and_cancel_without_blocking() {
     .unwrap();
     assert!(heartbeat.contains(": ping"), "{heartbeat:?}");
 
-    // Un cliente desconectado no impide que el servidor siga respondiendo.
+    // A disconnected client does not stop the server from responding.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let mut ping = TcpStream::connect(("127.0.0.1", port)).unwrap();
     ping.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
@@ -280,8 +280,8 @@ async fn sse_conexion_sigue_abierta_tras_muchos_archivos() {
     let mut client = tokio::task::spawn_blocking(move || open_sse(port))
         .await
         .unwrap();
-    // En paralelo para que los temporizadores de 80 ms venzan a la vez y
-    // desborden el buffer de 1024 eventos.
+    // Run in parallel so the 80 ms timers expire together and overflow the
+    // 1024-event buffer.
     let mut writers = Vec::new();
     for chunk in 0..6u32 {
         let vault = temp.path().to_path_buf();

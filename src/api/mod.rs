@@ -1,5 +1,5 @@
-//! Handlers HTTP y rutas estáticas del servidor Markvi.
-//! El guard `Host`/`Origin` se aplica solo a las rutas de `createRoutes`, igual que Bun.
+//! HTTP handlers and static routes for the Markvi server.
+//! The `Host`/`Origin` guard applies only to API routes, matching the original server.
 
 use crate::{
     config::{self, LoadedConfig},
@@ -114,7 +114,7 @@ fn text_response(
     builder.body(Body::from(body)).expect("valid response")
 }
 
-/// Comparación débil (RFC 9110 §13.1.2) de `If-None-Match` con un etag; admite lista y `*`.
+/// Weak `If-None-Match` comparison (RFC 9110 §13.1.2); accepts a list and `*`.
 fn etag_matches(header: &str, etag: &str) -> bool {
     let strip = |tag: &str| tag.trim().trim_start_matches("W/").to_string();
     let wanted = strip(etag);
@@ -161,6 +161,7 @@ pub struct StaticAssets {
 }
 
 impl StaticAssets {
+    /// Builds the static asset table from the embedded frontend build output.
     pub fn new() -> Self {
         let manifest: Value =
             serde_json::from_str(embedded::MANIFEST).expect("valid static manifest");
@@ -188,7 +189,6 @@ impl StaticAssets {
         }
     }
 
-    /// `index_response` o 304 si `If-None-Match` coincide con su etag.
     fn index_conditional(&self, if_none_match: Option<&str>) -> Response {
         if let (Some(etag), Some(header)) = (&self.index_etag, if_none_match) {
             if etag_matches(header, etag) {
@@ -261,6 +261,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Creates shared application state for the router.
     pub fn new(
         root: PathBuf,
         port: u16,
@@ -317,8 +318,8 @@ impl AppState {
     }
 }
 
-/// Decodifica un componente `application/x-www-form-urlencoded`: primero `+` → espacio
-/// sobre el texto crudo y después `%XX` (así `%2B` sigue siendo `+`).
+/// Decodes an `application/x-www-form-urlencoded` component: `+` becomes a space
+/// before `%XX` decoding, so `%2B` still yields a literal `+`.
 fn decode_form(raw: &str) -> Option<String> {
     pure::percent_decode(&raw.replace('+', " "))
 }
@@ -327,7 +328,7 @@ fn query_param(req: &Request, key: &str) -> Option<String> {
     let query = req.uri().query()?;
     for pair in query.split('&') {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-        // Un nombre mal codificado no puede ser el buscado: se ignora sin afectar al resto.
+        // A badly encoded key cannot be the one we want; skip it without rejecting the rest.
         if decode_form(name).is_some_and(|decoded| decoded == key) {
             return decode_form(value);
         }
@@ -362,13 +363,13 @@ async fn body_json(req: Request) -> Result<Value, ApiError> {
     Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-// ---- handlers -------------------------------------------------------------
-
+/// Lists visible Markdown files.
 pub async fn tree_get(State(state): State<AppState>, _req: Request) -> Result<Response, ApiError> {
     let files = fs::list_markdown(&state.root).await;
     Ok(json_response(200, json!({ "files": files }), NO_STORE))
 }
 
+/// Returns the resolved configuration and its warnings.
 pub async fn config_get(
     State(state): State<AppState>,
     _req: Request,
@@ -381,6 +382,7 @@ pub async fn config_get(
     ))
 }
 
+/// Searches text across Markdown files.
 pub async fn search_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let query = query_param(&req, "q").unwrap_or_default();
     let query = query.trim();
@@ -395,6 +397,7 @@ pub async fn search_get(State(state): State<AppState>, req: Request) -> Result<R
     ))
 }
 
+/// Lists backlinks to a note.
 pub async fn backlinks_get(
     State(state): State<AppState>,
     req: Request,
@@ -411,6 +414,7 @@ pub async fn backlinks_get(
     ))
 }
 
+/// Returns a file as plain text with an ETag.
 pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let file = markdown_file(&state, query_param(&req, "path")).await?;
     let (content, lossy) = fs::read_text(&file).await?;
@@ -429,6 +433,7 @@ pub async fn file_get(State(state): State<AppState>, req: Request) -> Result<Res
     ))
 }
 
+/// Writes a file, optionally after an If-Match check.
 pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let create = query_param(&req, "create").as_deref() == Some("1");
     let file = if create {
@@ -449,7 +454,7 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
     let result = tokio::spawn(async move {
         let key = fs::lock_key(&file).await;
         fs::with_file_lock(&locks, &key, async move {
-            // Una sola lectura: sirve para el ETag y para saber si el archivo es UTF-8.
+            // One read serves both the ETag and the UTF-8 validity check.
             let read = if if_match.is_some() || !force {
                 Some(tokio::fs::read(&file).await)
             } else {
@@ -475,7 +480,7 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
                     )));
                 }
             } else if create {
-                // `create=1` solo crea: sin `If-Match` no pisa un archivo que ya existe.
+                // `create=1` never overwrites an existing file without `If-Match`.
                 if tokio::fs::symlink_metadata(&file).await.is_ok() {
                     return Err(ApiError::new(
                         409,
@@ -507,6 +512,7 @@ pub async fn file_put(State(state): State<AppState>, req: Request) -> Result<Res
     Ok(result.unwrap_or_else(|| empty_response(204, Some(response_etag))))
 }
 
+/// Creates a new file exclusively.
 pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let path = query_param(&req, "path");
     let path = path.as_deref().unwrap_or("");
@@ -519,8 +525,8 @@ pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Re
     tokio::spawn(async move {
         let key = fs::lock_key(&file).await;
         fs::with_file_lock(&locks, &key, async move {
-            // Los directorios padre se crean bajo el candado y justo antes de escribir;
-            // si la escritura falla, se retiran los que se crearon.
+            // Parents are created under the lock, just before writing; a failed
+            // write removes the directories created for this operation.
             let created = create_parents(&file).await?;
             let etag = hash::etag(&body);
             let written = match fs::spawn_write(file, body, true).await {
@@ -539,6 +545,7 @@ pub async fn file_post(State(state): State<AppState>, req: Request) -> Result<Re
     .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
+/// Deletes a file after validation and locking.
 pub async fn file_delete(
     State(state): State<AppState>,
     req: Request,
@@ -549,7 +556,7 @@ pub async fn file_delete(
         return Err(ApiError::new(400, "Only .md files are supported."));
     }
     let if_match = state.guard_header(&axum::http::header::IF_MATCH, &req);
-    // En una tarea propia: si el cliente corta, el borrado no se interrumpe a medias.
+    // Runs in a detached task so a cancelled client cannot leave a half-finished delete.
     let locks = state.locks.clone();
     tokio::spawn(async move {
         fs::with_file_lock(&locks, &fs::lock_key(&real).await, async {
@@ -575,8 +582,7 @@ pub async fn file_delete(
     .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
-/// Crea los directorios padre de `file` que falten y devuelve los creados
-/// (del más externo al más interno).
+/// Creates missing parent directories of `file`, returning them outermost first.
 async fn create_parents(file: &Path) -> std::io::Result<Vec<PathBuf>> {
     let Some(parent) = file.parent() else {
         return Ok(Vec::new());
@@ -598,15 +604,15 @@ async fn create_parents(file: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(missing)
 }
 
-/// Retira, del más interno al más externo, los directorios creados por `create_parents`.
-/// `remove_dir` solo borra directorios vacíos, así que nunca toca contenido ajeno.
+/// Removes directories created by `create_parents`, innermost first.
+/// `remove_dir` only deletes empty directories, so unrelated content is safe.
 async fn remove_created(created: &[PathBuf]) {
     for dir in created.iter().rev() {
         let _ = tokio::fs::remove_dir(dir).await;
     }
 }
 
-/// `move_into` creando antes los padres del destino; si falla, no deja directorios vacíos.
+/// `move_into` after creating destination parents, rolling them back on failure.
 async fn move_with_parents(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
     let created = create_parents(target).await?;
     let result = move_into(real, entry, target).await;
@@ -616,10 +622,10 @@ async fn move_with_parents(real: &Path, entry: &Path, target: &Path) -> Result<(
     result
 }
 
-/// Mueve `entry` a `target` con el candado ya tomado. `real` es el destino del
-/// enlace cuando `entry` es un symlink (solo Unix).
+/// Moves `entry` to `target` with the lock already held. `real` is the link
+/// target when `entry` is a symlink (Unix only).
 async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiError> {
-    // `resolve_new` ocurrió antes del candado: el destino puede haberse creado.
+    // `resolve_new` ran before locking: the destination may have appeared since.
     match tokio::fs::symlink_metadata(target).await {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
@@ -635,7 +641,7 @@ async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiEr
     {
         let metadata = tokio::fs::symlink_metadata(entry).await?;
         if metadata.file_type().is_symlink() {
-            // El padre puede ser a su vez un enlace: el relativo se calcula desde su ruta real.
+            // The parent may itself be a link; compute the relative path from its real path.
             let parent = tokio::fs::canonicalize(target.parent().unwrap_or(Path::new("/"))).await?;
             let link = relative_path(&parent, real);
             tokio::fs::symlink(link, target).await?;
@@ -646,12 +652,12 @@ async fn move_into(real: &Path, entry: &Path, target: &Path) -> Result<(), ApiEr
     #[cfg(not(unix))]
     let _ = real;
 
-    // Para archivos regulares, enlace + borrado: nunca un rename sobre un
-    // destino aparecido entre la comprobación y la escritura.
+    // Regular files use link + unlink, never a rename that could overwrite a
+    // destination created between the check and the write.
     link_or_rename(entry, target, tokio::fs::hard_link(entry, target).await).await
 }
 
-/// Completa el movimiento según el resultado de `hard_link(entry, target)`.
+/// Completes the move based on the result of `hard_link(entry, target)`.
 async fn link_or_rename(
     entry: &Path,
     target: &Path,
@@ -660,7 +666,7 @@ async fn link_or_rename(
     match linked {
         Ok(()) => tokio::fs::remove_file(entry).await?,
         Err(error) if fs::hard_link_unsupported(&error) => {
-            // Sin enlaces duros: rename, tras volver a comprobar que el destino sigue libre.
+            // Without hard links: rename, after rechecking that the destination is free.
             match tokio::fs::symlink_metadata(target).await {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
@@ -685,12 +691,12 @@ async fn link_or_rename(
 }
 
 fn is_cross_device(error: &std::io::Error) -> bool {
-    // EXDEV es 18 en Linux y macOS (`ErrorKind::CrossesDevices` exige Rust 1.85).
+    // EXDEV is 18 on Linux and macOS (`ErrorKind::CrossesDevices` needs Rust 1.85).
     cfg!(any(target_os = "linux", target_os = "macos")) && error.raw_os_error() == Some(18)
 }
 
-/// Resultado de `rename(entry, target)`. Si cruza dispositivos (EXDEV), copia a un
-/// temporal junto al destino, lo publica sin pisar nada y borra el origen.
+/// Result of `rename(entry, target)`. On EXDEV, copies to a temporary file beside
+/// the destination, publishes it without overwriting and removes the source.
 async fn rename_or_copy(
     entry: &Path,
     target: &Path,
@@ -714,7 +720,7 @@ async fn copy_move(entry: &Path, target: &Path) -> Result<(), ApiError> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(exists()),
         Err(error) if fs::hard_link_unsupported(&error) => {
-            // Sin enlaces duros: rename dentro del mismo directorio, con destino libre.
+            // Without hard links: rename within one directory, with the destination free.
             if tokio::fs::symlink_metadata(target).await.is_ok() {
                 Err(exists())
             } else {
@@ -726,13 +732,14 @@ async fn copy_move(entry: &Path, target: &Path) -> Result<(), ApiError> {
     let _ = tokio::fs::remove_file(&temp).await;
     published?;
     if let Err(error) = tokio::fs::remove_file(entry).await {
-        // No dejar el archivo duplicado: se retira la copia recién publicada.
+        // Avoid leaving two copies: remove the freshly published one.
         let _ = tokio::fs::remove_file(target).await;
         return Err(error.into());
     }
     Ok(())
 }
 
+/// Moves or renames a file under the lock.
 pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let payload = body_json(req).await?;
     let from = payload.get("from").and_then(Value::as_str);
@@ -745,14 +752,14 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     }
     let (real, entry) = fs::resolve_entry(&state.root, Some(from)).await?;
     let target = fs::resolve_new(&state.root, Some(to)).await?;
-    // Desviación A-019: bloquear también el destino para dos moves concurrentes.
+    // Lock the destination too, so two concurrent moves cannot race.
     let mut keys = [fs::lock_key(&real).await, fs::lock_key(&target).await];
     keys.sort();
     let locks = state.locks.clone();
     let first = keys[0].clone();
     let second = keys[1].clone();
-    // En una tarea propia: si el cliente corta entre `hard_link` y `remove_file`
-    // (o tras crear los padres) no quedaría el archivo duplicado ni carpetas vacías.
+    // Detached task: if the client disconnects between `hard_link` and `remove_file`
+    // (or after creating parents), no duplicate file or empty directories remain.
     tokio::spawn(async move {
         fs::with_file_lock(&locks, &first, async {
             fs::with_file_lock(&locks, &second, async {
@@ -767,6 +774,7 @@ pub async fn move_post(State(state): State<AppState>, req: Request) -> Result<Re
     .map_err(|_| ApiError::new(500, "Internal error."))?
 }
 
+/// Opens the SSE event stream.
 pub async fn events_get(
     State(state): State<AppState>,
     _req: Request,
@@ -800,6 +808,7 @@ async fn files_dispatch(State(state): State<AppState>, req: Request) -> Result<R
     }
 }
 
+/// Serves a raw file from the notes directory.
 pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let encoded = req
         .uri()
@@ -809,7 +818,7 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
     let decoded = percent_decode(encoded)?;
     let file = fs::resolve_file(&state.root, Some(&decoded)).await?;
     let is_markdown = pure::is_markdown_path(&file.to_string_lossy());
-    // ServeFile aporta Range, HEAD, If-Range y el MIME (mime_guess) sin cargar el archivo.
+    // ServeFile provides Range, HEAD, If-Range and MIME (mime_guess) without loading the file.
     let response = ServeFile::new(&file)
         .oneshot(req)
         .await
@@ -834,10 +843,12 @@ pub async fn raw_get(State(state): State<AppState>, req: Request) -> Result<Resp
     Ok(response)
 }
 
+/// Serves the embedded HTML for / and /view/*.
 pub async fn index_get(State(state): State<AppState>, req: Request) -> Response {
     state.assets.index_conditional(if_none_match(&req))
 }
 
+/// Serves a static asset or the fallback response.
 pub async fn asset_get(State(state): State<AppState>, req: Request) -> Response {
     state
         .assets
@@ -876,8 +887,8 @@ impl AppState {
     }
 }
 
-/// Un único handler para `/api/*`: así no hay `405` de axum ni cabecera `Allow`
-/// añadida; el original devuelve 404 del `fetch()` para métodos no definidos.
+/// A single `/api/*` handler avoids axum's `405` and `Allow` header; undefined
+/// methods return the fallback 404, as in the original server.
 async fn api_dispatch(State(state): State<AppState>, req: Request) -> Result<Response, ApiError> {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
@@ -905,6 +916,7 @@ async fn guard_middleware(
     Ok(next.run(req).await)
 }
 
+/// Builds the HTTP router with the shared state.
 pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{any, get};
 
@@ -924,6 +936,7 @@ pub fn router(state: AppState) -> axum::Router {
         .with_state(state)
 }
 
+/// Returns the loopback bind address for a port.
 pub fn bind_addr(port: u16) -> SocketAddr {
     SocketAddr::new(pure::HOSTNAME.parse().expect("HOSTNAME válido"), port)
 }
@@ -1086,7 +1099,7 @@ mod tests {
         assert!(matches!(error, ApiError::Io(_)), "{error:?}");
         assert!(!dir.path().join("nuevo").exists(), "quedó nuevo/");
 
-        // Con éxito, los padres se conservan.
+        // On success the created parents are kept.
         let source = dir.path().join("a.md");
         std::fs::write(&source, "a").unwrap();
         move_with_parents(&source, &source, &target).await.unwrap();

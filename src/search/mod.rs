@@ -1,6 +1,6 @@
-//! Búsqueda y backlinks literales sobre Markdown.
-//! El query se escapa en TS (`escapeRegExp`), así que aquí es búsqueda literal:
-//! no se necesita el crate `regex`. El plegado de-case replica `/i` sin `u` de Bun.
+//! Literal search and backlinks over Markdown.
+//! The JS client escapes the query (`escapeRegExp`), so no `regex` crate is needed.
+//! Case folding reproduces Bun's `/i` behavior without the `u` flag.
 
 use crate::{
     core::pure::{self, is_case_sensitive, is_markdown_path, wiki_links, WikiIndex},
@@ -9,7 +9,6 @@ use crate::{
 use futures_util::{stream, StreamExt};
 use std::sync::Arc;
 
-/// Resultado por archivo: el contrato TS usa `hits` aquí y `results` en el agregado.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileHits {
     pub hits: Vec<crate::core::pure::SearchHit>,
@@ -43,8 +42,8 @@ impl Default for ScanOptions {
     }
 }
 
-/// Equivale a `String.prototype.toLowerCase()` de un solo carácter con las
-/// excepciones observadas en Bun para `/i` sin bandera `u`.
+/// Single-character equivalent of `String.prototype.toLowerCase()`, including
+/// Bun's observed exceptions for `/i` without the `u` flag.
 fn fold(c: char) -> char {
     match c {
         'ς' => 'σ',
@@ -82,7 +81,7 @@ fn split_lines(text: &str) -> Vec<&str> {
     lines
 }
 
-/// Query plegada una sola vez por búsqueda (o por llamada directa).
+/// Query folded once per search (or per direct call).
 fn folded_query(query: &str, sensitive: bool) -> Vec<char> {
     if sensitive {
         query.chars().collect()
@@ -110,7 +109,7 @@ fn contains_ascii_ci(text: &str, query: &str) -> bool {
     })
 }
 
-/// Rangos UTF-16 de las coincidencias literales no solapadas de `query` en `line`.
+/// UTF-16 ranges of non-overlapping literal matches of `query` in `line`.
 fn literal_ranges(
     line: &str,
     query: &str,
@@ -120,7 +119,7 @@ fn literal_ranges(
     if folded.is_empty() {
         return Vec::new();
     }
-    // Prefiltro por línea: evita materializar caracteres y offsets si no hay match.
+    // Per-line prefilter: avoids building chars and offsets when there is no match.
     if sensitive {
         if !line.contains(query) {
             return Vec::new();
@@ -128,7 +127,7 @@ fn literal_ranges(
     } else if query.is_ascii() && !contains_ascii_ci(line, query) {
         return Vec::new();
     }
-    // ASCII: byte offset == UTF-16 offset, sin char_indices ni Vec<char>.
+    // ASCII: byte offsets equal UTF-16 offsets; no char_indices or Vec<char>.
     if line.is_ascii() && query.is_ascii() {
         if sensitive {
             return line
@@ -156,7 +155,7 @@ fn literal_ranges(
     }
 
     let chars: Vec<char> = line.chars().collect();
-    // Plegar una sola vez por línea, no en cada posición candidata.
+    // Fold once per line, not at every candidate position.
     let folded_line: Vec<char> = chars
         .iter()
         .copied()
@@ -184,7 +183,7 @@ fn literal_ranges(
     ranges
 }
 
-/// Recorta la línea como JS `buildHit`: índices y longitudes en unidades UTF-16.
+/// Trims a line like JS `buildHit`: indices and lengths in UTF-16 units.
 pub fn build_hit(
     path: &str,
     line: usize,
@@ -237,13 +236,14 @@ pub fn build_hit(
     }
 }
 
+/// Finds literal matches of a query in one line.
 pub fn search_text(path: &str, text: &str, query: &str, per_file: usize) -> FileHits {
     let sensitive = is_case_sensitive(query);
     let folded = folded_query(query, sensitive);
     search_text_prepared(path, text, query, per_file, sensitive, &folded)
 }
 
-/// Misma búsqueda, con `sensitive` y la query plegada calculados una sola vez.
+/// Same search with `sensitive` and the folded query computed once.
 fn search_text_prepared(
     path: &str,
     text: &str,
@@ -259,7 +259,7 @@ fn search_text_prepared(
     if folded.is_empty() {
         return empty();
     }
-    // Prefiltro: sin candidato no hay que dividir el texto en líneas.
+    // Prefilter: without a candidate there is no need to split into lines.
     if sensitive {
         if !text.contains(query) {
             return empty();
@@ -291,7 +291,7 @@ fn empty_hits() -> FileHits {
     }
 }
 
-/// Escanea los archivos Markdown visibles aplicando `search_file`.
+/// Scans visible Markdown files with `search_file`.
 pub async fn scan_markdown<F>(
     root: &std::path::Path,
     options: ScanOptions,
@@ -320,7 +320,7 @@ where
         let search_file = Arc::clone(&search_file);
         async move {
             let file = root.join(&path);
-            // El metadata evita abrir/leer archivos obviamente demasiado grandes.
+            // Metadata avoids opening files that are clearly too large.
             match tokio::fs::metadata(&file).await {
                 Ok(metadata) if metadata.len() <= max_file_bytes => {}
                 _ => return empty_hits(),
@@ -350,8 +350,8 @@ where
         }
     });
 
-    // `buffered` conserva el orden de entrada; al alcanzar el límite se deja
-    // de consumir el stream y se cancelan las lecturas que aún estén pendientes.
+    // `buffered` keeps input order; at the limit we stop consuming the stream
+    // and cancel reads still in flight.
     let mut pending = stream::iter(tasks).buffered(concurrency);
     let mut results = Vec::new();
     let mut full = false;
@@ -375,6 +375,7 @@ where
     }
 }
 
+/// Searches visible Markdown files with a concurrency limit.
 pub async fn search_markdown(
     root: &std::path::Path,
     query: &str,
@@ -414,14 +415,13 @@ fn may_have_links(line: &str) -> bool {
     line.contains("[[") || contains_ascii_ci(line, ".md")
 }
 
-/// Sustituye por espacios el código en línea, conservando longitudes UTF-16.
+/// Replaces inline code with spaces, preserving UTF-16 lengths.
 ///
-/// El cierre válido de una apertura de `ticks` acentos graves es la primera
-/// tirada posterior con longitud `>= ticks` (la regex TS exige que el
-/// delimitador no tenga más acentos graves a continuación). Las tiradas se
-/// calculan en una pasada; `min_failed` recuerda la menor apertura sin cierre,
-/// porque cualquier apertura mayor tampoco lo tendrá. Sin esto, cada apertura
-/// sin cierre reescaneaba hasta el final de la línea (cuadrático).
+/// A run of `ticks` backticks closes at the next run of at least `ticks`
+/// backticks (the JS regex requires the closing run not to be followed by
+/// another backtick). Runs are found in one pass; `min_failed` records the
+/// smallest unclosed opening because larger ones cannot close either. Without
+/// it, every unclosed opening rescanned to end of line (quadratic).
 fn mask_inline_code(line: &str) -> String {
     let tick = b'`' as u16;
     let units: Vec<u16> = line.encode_utf16().collect();
@@ -468,8 +468,8 @@ fn mask_inline_code(line: &str) -> String {
 fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
     let mut out = Vec::new();
     let units: Vec<u16> = line.encode_utf16().collect();
-    // Para cada posición, índice del siguiente `]` o salto de línea. Se calcula
-    // en una pasada y evita volver a recorrer el sufijo por cada `[`.
+    // Next `]` or newline per position, computed in one pass instead of
+    // rescanning the suffix for every `[`.
     let mut next_close = vec![units.len(); units.len() + 1];
     let mut next = units.len();
     for index in (0..units.len()).rev() {
@@ -484,7 +484,7 @@ fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
             at += 1;
             continue;
         }
-        // Descarta imágenes `![...]` y busca `](...)`.
+        // Skip images `![...]`; look for `](...)` instead.
         if at > 0 && units[at - 1] == b'!' as u16 {
             at += 1;
             continue;
@@ -547,6 +547,7 @@ fn markdown_links(line: &str) -> Vec<((usize, usize), String)> {
     out
 }
 
+/// Extracts Markdown link destinations from a source string.
 pub fn extract_links(source: &str) -> Vec<FoundLink> {
     let mut links = Vec::new();
     let mut fence: Option<(char, usize)> = None;
@@ -560,8 +561,8 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
             let ticks = trimmed.chars().take_while(|c| Some(*c) == symbol).count();
             if ticks >= 3 {
                 let rest = trimmed[ticks..].trim();
-                // CommonMark: el info-string de una valla de backticks no puede
-                // contener backticks; esa línea es texto normal.
+                // CommonMark: a fenced code info-string cannot contain backticks;
+                // such a line is plain text.
                 if symbol == Some('`') && rest.contains('`') {
                     None
                 } else {
@@ -607,6 +608,7 @@ pub fn extract_links(source: &str) -> Vec<FoundLink> {
     links
 }
 
+/// Normalizes a path with POSIX semantics.
 pub fn posix_normalize(path: &str) -> String {
     let mut stack: Vec<&str> = Vec::new();
     for segment in path.split('/') {
@@ -629,6 +631,7 @@ fn decode_percent(path: &str) -> String {
     pure::percent_decode(path).unwrap_or_else(|| path.to_string())
 }
 
+/// Resolves a link target relative to a source file.
 pub fn markdown_target(destination: &str, from: &str) -> Option<String> {
     if destination.is_empty() || destination.starts_with('#') || destination.starts_with("//") {
         return None;
@@ -660,6 +663,7 @@ pub fn markdown_target(destination: &str, from: &str) -> Option<String> {
     (!resolved.starts_with("..")).then_some(resolved)
 }
 
+/// Finds backlinks to a file across the given paths.
 pub fn find_backlinks(
     source: &str,
     from: &str,
@@ -702,6 +706,7 @@ pub fn find_backlinks(
     empty
 }
 
+/// Builds backlink results over the notes tree.
 pub async fn search_backlinks(
     root: &std::path::Path,
     target: &str,
@@ -737,7 +742,7 @@ mod tests {
             while cursor + ticks < units.len() && units[cursor + ticks] == b'`' as u16 {
                 ticks += 1;
             }
-            // La regex TS exige que el delimitador de cierre no tenga más acentos graves.
+            // The JS regex requires the closing run not to be followed by more backticks.
             let mut end = cursor + ticks;
             let mut found = None;
             while end + ticks <= units.len() {
@@ -800,7 +805,7 @@ mod tests {
 
     #[test]
     fn decode_percent_no_panica_con_multibyte_y_deja_literal_invalido() {
-        // %aé corta un carácter UTF-8: antes hacía panic en el slice &str.
+        // `%aÃ©` cuts a UTF-8 character; slicing &str there used to panic.
         assert_eq!(decode_percent("%aé.md"), "%aé.md");
         assert_eq!(decode_percent("%41"), "A");
         assert_eq!(decode_percent("%+4"), "%+4");

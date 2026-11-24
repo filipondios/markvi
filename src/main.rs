@@ -1,4 +1,4 @@
-//! Binario de Markvi: CLI, servidor HTTP y apagado ordenado.
+//! Markvi binary: CLI, HTTP server and graceful shutdown.
 use axum::Router;
 use clap::Parser;
 use markvi_server::{
@@ -10,12 +10,12 @@ use std::{net::SocketAddr, path::PathBuf};
 #[derive(Parser)]
 #[command(name = "markvi", disable_version_flag = true)]
 struct Args {
-    /// Directorio a servir
+    /// Directory to serve
     directory: PathBuf,
-    /// Puerto de escucha
+    /// Listening port
     #[arg(short, long, default_value_t = 3000, value_parser = clap::value_parser!(u16).range(1..))]
     port: u16,
-    /// Archivo de configuración
+    /// Configuration file
     #[arg(short, long)]
     config: Option<PathBuf>,
 }
@@ -33,7 +33,7 @@ async fn shutdown(mut watcher: FileWatcher, signal: impl std::future::Future<Out
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    // Antes de abrir el puerto: una señal temprana debe apagar de forma ordenada.
+    // Register signals before binding so an early signal still shuts down cleanly.
     let signal = watch::install_shutdown_signals();
     let metadata = match tokio::fs::metadata(&args.directory).await {
         Ok(metadata) => metadata,
@@ -53,7 +53,7 @@ async fn main() {
         Err(error) => fail(&error.to_string()),
     };
 
-    // `vars()` entra en pánico si alguna variable no es UTF-8.
+    // `vars()` panics on a non-UTF-8 variable; collect before the server starts.
     let env: Vec<(String, String)> = std::env::vars_os()
         .map(|(key, value)| {
             (

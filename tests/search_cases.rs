@@ -1,4 +1,4 @@
-//! Casos de regresión de búsqueda y backlinks.
+//! Search and backlinks regression cases.
 use markvi_server::{core::pure::WikiIndex, search};
 use serde_json::Value;
 

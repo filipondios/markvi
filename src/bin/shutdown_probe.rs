@@ -1,4 +1,4 @@
-//! Sonda de tests: usa la misma función de apagado que el servidor real.
+//! Test probe using the same shutdown path as the real server.
 use markvi_server::watch::install_shutdown_signals;
 
 #[tokio::main]

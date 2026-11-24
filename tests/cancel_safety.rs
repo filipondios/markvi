@@ -1,4 +1,4 @@
-//! Mover y borrar siguen hasta el final aunque el cliente corte la petición.
+//! Moves and deletes still finish when the client disconnects.
 use axum::{
     body::Body,
     extract::State,
@@ -22,7 +22,7 @@ fn setup(name: &str) -> (PathBuf, AppState, FileWatcher) {
     (root, state, watcher)
 }
 
-/// Retiene el candado de `file` hasta que se envíe por el canal devuelto.
+/// Holds the lock on `file` until the returned channel sends.
 async fn hold_lock(state: &AppState, file: PathBuf) -> tokio::sync::oneshot::Sender<()> {
     let (release, wait) = tokio::sync::oneshot::channel::<()>();
     let locks = state.locks.clone();
@@ -46,7 +46,7 @@ async fn move_post_cancelado_se_completa() {
         .uri("/api/move")
         .body(Body::from(r#"{"from":"a.md","to":"nuevo/b.md"}"#))
         .unwrap();
-    // El cliente corta mientras el movimiento espera el candado.
+    // The client disconnects while the move waits for the lock.
     let cut = tokio::time::timeout(Duration::from_millis(100), api::move_post(State(state), req)).await;
     assert!(cut.is_err(), "debía seguir esperando el candado");
     let _ = release.send(());

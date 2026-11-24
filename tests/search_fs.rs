@@ -1,4 +1,4 @@
-//! Integración de search/backlinks sobre copias temporales (sin tocar `example/`).
+//! Search/backlinks integration over temporary copies (`example/` is untouched).
 use markvi_server::search::{self, ScanOptions};
 use std::{
     fs::File,
@@ -157,7 +157,7 @@ async fn backlinks_ignore_fences_and_deduplicate() {
         .iter()
         .map(|hit| hit.path.as_str())
         .collect();
-    // El listado TS pone primero los archivos de la raíz y luego las subcarpetas.
+    // The JS listing puts root files first, then subdirectories.
     assert_eq!(paths, vec!["tres.md", "notas/dos.md", "notas/uno.md"]);
     assert!(!results.truncated);
     let uno = results

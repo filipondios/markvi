@@ -1,5 +1,5 @@
-//! Núcleo puro del servidor: rutas, wiki y valores por defecto.
-//! Sin Node, Bun ni DOM. Las firmas y el orden de campos siguen a los tests de `src/`.
+//! Pure server helpers: path rules, wiki links and defaults.
+//! No Node, Bun or DOM; signatures and field order are part of the API contract.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ pub const SEARCH_URL: &str = "/api/search";
 pub const BACKLINKS_URL: &str = "/api/backlinks";
 pub const EVENTS_URL: &str = "/api/events";
 
+/// Detects whether a query needs case-sensitive matching.
 pub fn is_case_sensitive(query: &str) -> bool {
     query != query.to_lowercase()
 }
@@ -25,7 +26,7 @@ pub(crate) fn utf16_len(text: &str) -> usize {
     text.chars().map(|c| c.len_utf16()).sum()
 }
 
-/// Decodificación estricta de `%XX`; `None` si hay un escape inválido.
+/// Strict `%XX` decoding; `None` on an invalid escape.
 pub(crate) fn percent_decode(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -47,12 +48,14 @@ pub(crate) fn percent_decode(value: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Normalizes a path with POSIX-style rules.
 pub fn normalize_path(path: &str) -> String {
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("./").unwrap_or(&path);
     path.trim_start_matches('/').to_string()
 }
 
+/// Checks whether a path ends in .md.
 pub fn is_markdown_path(path: &str) -> bool {
     path.len() >= 3
         && path
@@ -60,6 +63,7 @@ pub fn is_markdown_path(path: &str) -> bool {
             .is_some_and(|tail| tail.eq_ignore_ascii_case(".md"))
 }
 
+/// Checks that a path stays inside the root and is not hidden.
 pub fn is_safe_path(path: &str) -> bool {
     if !is_markdown_path(path)
         || path.starts_with('/')
@@ -72,7 +76,7 @@ pub fn is_safe_path(path: &str) -> bool {
         .all(|s| !s.is_empty() && s != ".." && !s.starts_with('.'))
 }
 
-/// Equivale a `encodeURIComponent`: deja A-Z a-z 0-9 - _ . ! ~ * ' ( ).
+/// Matches `encodeURIComponent`: leaves A-Z a-z 0-9 - _ . ! ~ * ' ( ) untouched.
 pub fn encode_uri_component(value: &str) -> String {
     let mut out = String::new();
     for byte in value.as_bytes() {
@@ -88,6 +92,7 @@ pub fn encode_uri_component(value: &str) -> String {
     out
 }
 
+/// Normalizes a path for a new file, or returns None if invalid.
 pub fn normalize_new_path(input: &str) -> Option<String> {
     let mut path = input
         .trim()
@@ -109,6 +114,7 @@ pub fn normalize_new_path(input: &str) -> Option<String> {
     is_safe_path(&path).then_some(path)
 }
 
+/// Splits a path into directory and file name.
 pub fn split_path(path: &str) -> (&str, &str) {
     match path.rfind('/') {
         Some(index) => (&path[..index], &path[index + 1..]),
@@ -116,6 +122,7 @@ pub fn split_path(path: &str) -> (&str, &str) {
     }
 }
 
+/// Builds a /view/ URL for a note.
 pub fn view_url(path: &str) -> String {
     let encoded = path
         .split('/')
@@ -125,6 +132,7 @@ pub fn view_url(path: &str) -> String {
     format!("{VIEW_PREFIX}{encoded}")
 }
 
+/// Builds an API URL for raw file contents.
 pub fn file_url(path: &str) -> String {
     format!("{FILES_URL}?path={}", encode_uri_component(path))
 }
@@ -188,6 +196,7 @@ pub struct Config {
     pub render: RenderExtras,
 }
 
+/// Returns the default configuration values.
 pub fn default_config() -> Config {
     let actions = [
         ("f", "find"),
@@ -230,7 +239,6 @@ pub struct SearchHit {
     pub path: String,
     pub line: u32,
     pub text: String,
-    /// Rangos UTF-16 `[desde, hasta)`, como en el navegador.
     pub matches: Vec<(usize, usize)>,
 }
 
@@ -251,7 +259,7 @@ fn forbidden_link_char(c: char) -> bool {
     matches!(c, '[' | ']' | '\n')
 }
 
-/// Parsea el contenido entre `[[` y `]]` con la misma gramática que el regex TS.
+/// Parses text between `[[` and `]]` with the same grammar as the JS regex.
 pub fn parse_wiki_link(inner: &str) -> Option<WikiRef> {
     if inner.chars().any(forbidden_link_char) {
         return None;
@@ -272,8 +280,8 @@ pub fn parse_wiki_link(inner: &str) -> Option<WikiRef> {
     }
 }
 
-/// Todas las coincidencias `[[...]]` de un texto: (offset UTF-16, texto, referencia).
-/// Escanea solo hasta el primer `[`, `]` o `\n` tras `[[`, así que es lineal.
+/// All `[[...]]` matches: (UTF-16 offset, text, reference).
+/// Scanning stops at the first `[`, `]` or newline after `[[`, keeping it linear.
 pub fn wiki_links(text: &str) -> Vec<(usize, String, WikiRef)> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
@@ -309,7 +317,6 @@ pub fn wiki_links(text: &str) -> Vec<(usize, String, WikiRef)> {
                 i = j + 2;
                 continue;
             }
-            // Candidato fallido: saltar directamente al carácter prohibido.
             if j > i + 2 {
                 utf16 += 2 + inner_utf16;
                 i = j;
@@ -323,6 +330,7 @@ pub fn wiki_links(text: &str) -> Vec<(usize, String, WikiRef)> {
     out
 }
 
+/// Returns the display label of a wiki link.
 pub fn wiki_label(ref_: &WikiRef) -> String {
     if !ref_.alias.is_empty() {
         return ref_.alias.clone();
@@ -337,7 +345,7 @@ pub fn wiki_label(ref_: &WikiRef) -> String {
     }
 }
 
-/// Slug de título: quita lo que no sea letra, número, espacio, `_` o `-`.
+/// Heading slug: drops anything but letters, digits, spaces, `_` and `-`.
 pub fn heading_slug(text: &str) -> String {
     let cleaned: String = text
         .trim()
@@ -348,6 +356,7 @@ pub fn heading_slug(text: &str) -> String {
     cleaned.split_whitespace().collect::<Vec<_>>().join("-")
 }
 
+/// Joins a relative wiki link to a base path.
 pub fn join_relative(base: &str, relative: &str) -> Option<String> {
     let combined = format!("{base}{relative}");
     let mut stack: Vec<&str> = Vec::new();
@@ -398,6 +407,7 @@ pub struct WikiIndex {
 }
 
 impl WikiIndex {
+    /// Builds a wiki index from the given file paths.
     pub fn new(files: &[String]) -> Self {
         let mut by_name: std::collections::HashMap<String, Vec<WikiEntry>> =
             std::collections::HashMap::new();
@@ -414,7 +424,7 @@ impl WikiIndex {
         Self { by_name }
     }
 
-    /// Resolución Obsidian-style; el desempate final usa orden de bytes, no ICU.
+    /// Resolves a wiki target to a file path.
     pub fn resolve(&self, target: &str, from: &str) -> Option<String> {
         let mut raw = target.trim().replace('\\', "/");
         while raw.contains("//") {

@@ -1,4 +1,4 @@
-//! El binario arranca aunque alguna variable de entorno no sea UTF-8.
+//! The binary starts even when an environment variable is not UTF-8.
 #[cfg(unix)]
 #[test]
 fn arranca_con_variable_de_entorno_no_utf8() {

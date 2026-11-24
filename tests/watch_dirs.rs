@@ -1,5 +1,5 @@
-//! Watcher: directorios creados, recreados o renombrados tras el arranque deben
-//! seguir notificando cambios *dentro* de ellos, y las reconciliaciones se agrupan.
+//! Watcher: directories created, recreated or renamed after startup must keep
+//! reporting changes inside them, and reconciliations are coalesced.
 use markvi_server::watch::{DiskEvent, DiskEventKind, FileWatcher};
 use std::{
     io::Write,
@@ -48,7 +48,7 @@ fn append(path: &Path, text: &str) {
     file.write_all(text.as_bytes()).unwrap();
 }
 
-/// Recoge eventos hasta `quiet_ms` sin actividad (o `max_ms` en total).
+/// Collects events until `quiet_ms` without activity (or `max_ms` total).
 async fn collect(receiver: &mut Receiver<DiskEvent>, quiet_ms: u64, max_ms: u64) -> Vec<DiskEvent> {
     let mut out = Vec::new();
     let deadline = Instant::now() + Duration::from_millis(max_ms);
@@ -62,7 +62,7 @@ async fn collect(receiver: &mut Receiver<DiskEvent>, quiet_ms: u64, max_ms: u64)
     out
 }
 
-/// Deja pasar el arranque y vacía lo pendiente: lo que llegue después es nuevo.
+/// Skips startup and drains pending events; anything after that is new.
 async fn settle(receiver: &mut Receiver<DiskEvent>) {
     tokio::time::sleep(Duration::from_millis(400)).await;
     collect(receiver, 300, 3000).await;
@@ -79,8 +79,8 @@ async fn directorio_nuevo_notifica_cambios_posteriores_dentro() {
     std::fs::write(temp.path().join("nuevo/n.md"), "n\n").unwrap();
     settle(&mut events).await;
 
-    // Solo la propia modificación puede producir este evento: el diff de
-    // `reconcile` ya conoce `nuevo/n.md`.
+    // Only the actual write can produce this event: `reconcile`'s diff
+    // already knows about `nuevo/n.md`.
     append(&temp.path().join("nuevo/n.md"), "m\n");
     let seen = collect(&mut events, 300, 3000).await;
     assert!(
@@ -99,8 +99,8 @@ async fn directorio_recreado_en_la_misma_ventana_sigue_vigilado() {
     let mut events = watcher.subscribe();
     settle(&mut events).await;
 
-    // Borrado y recreación dentro del debounce: el kernel descarta el watch
-    // antiguo y la ruta sigue existiendo cuando se reconcilia.
+    // Delete and recreate inside the debounce window: the kernel drops the old
+    // watch while the path still exists when reconciliation runs.
     std::fs::remove_dir_all(temp.path().join("sub")).unwrap();
     std::fs::create_dir(temp.path().join("sub")).unwrap();
     std::fs::write(temp.path().join("sub/a.md"), "y\n").unwrap();

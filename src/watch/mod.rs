@@ -1,6 +1,6 @@
-//! Watcher y canal SSE.
-//! `notify` emite eventos de directorio; encima se mantiene el conjunto de
-//! archivos conocidos, el debounce de 80 ms y los alias por symlink.
+//! Filesystem watcher and SSE channel.
+//! On top of `notify` events it tracks known files, an 80 ms debounce and
+//! symlink aliases.
 
 use crate::fs::{self, MarkdownEntry};
 use futures_core::Stream;
@@ -27,7 +27,7 @@ use tokio::{
 use tokio_stream::wrappers::BroadcastStream;
 
 pub const DEBOUNCE_MS: u64 = 80;
-/// Ventana en la que varias peticiones de reconciliación se funden en una.
+/// Window in which reconciliation requests are coalesced.
 const RECONCILE_COALESCE_MS: u64 = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -35,8 +35,6 @@ const RECONCILE_COALESCE_MS: u64 = 25;
 pub enum DiskEventKind {
     Change,
     Delete,
-    /// El watcher perdió eventos (desbordamiento de inotify): los clientes deben
-    /// reconsultar. Se emite al cliente como evento SSE `resync`, nunca como dato.
     Resync,
 }
 
@@ -66,6 +64,7 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
+    /// Starts watching a root directory.
     pub fn new(root: &Path) -> Self {
         let (hub_tx, _) = broadcast::channel(1024);
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Input>();
@@ -78,7 +77,7 @@ impl FileWatcher {
         }) {
             Ok(watcher) => Arc::new(Mutex::new(Some(watcher))),
             Err(error) => {
-                // Sin live-reload, pero el servidor sigue arrancando.
+                // No live reload, but the server still starts.
                 eprintln!("Could not watch the directory: {error}");
                 Arc::new(Mutex::new(None))
             }
@@ -116,8 +115,8 @@ impl FileWatcher {
                 };
                 match input {
                     Input::Init => {
-                        // Primero se registran los watches y después se toma la
-                        // instantánea: un cambio durante el arranque no se pierde.
+                        // Register watches before the snapshot so a change during
+                        // startup is not lost.
                         let first = fs::walk_tree(&root).await;
                         register_watches(&loop_watcher, &first.dirs, &mut watches).await;
                         let walk = fs::walk_tree(&root).await;
@@ -135,9 +134,9 @@ impl FileWatcher {
                             }
                         };
                         if event.need_rescan() {
-                            // IN_Q_OVERFLOW: se perdieron eventos y no hay rutas.
-                            // Reconciliar detecta altas/bajas; el resync cubre las
-                            // modificaciones de archivos ya conocidos.
+                            // IN_Q_OVERFLOW: events were lost and carry no paths.
+                            // Reconciliation detects additions/removals; resync covers
+                            // modifications of already known files.
                             request_reconcile(&mut reconcile_timer, &event_tx);
                             emit(
                                 DiskEvent {
@@ -257,30 +256,35 @@ impl FileWatcher {
         }
     }
 
-    /// Simula el aviso de desbordamiento de inotify (solo para tests).
+    /// Simulates an inotify overflow notification (tests only).
     #[doc(hidden)]
+    /// Injects a synthetic inotify overflow event for tests.
     pub fn inject_rescan(&self) {
         let event = NotifyEvent::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
         let _ = self.input.send(Input::Notify(Ok(event)));
     }
 
-    /// Reconciliaciones completas ejecutadas (recorrido del árbol + diff de archivos).
+    /// Number of full reconciliations performed.
     pub fn reconcile_count(&self) -> usize {
         self.reconciles.load(Ordering::Relaxed)
     }
 
+    /// Subscribes to file events.
     pub fn subscribe(&self) -> broadcast::Receiver<DiskEvent> {
         self.hub.subscribe_events()
     }
 
+    /// Returns the shared SSE event hub.
     pub fn hub(&self) -> Arc<SseHub> {
         self.hub.clone()
     }
 
+    /// Number of pending debounce timers.
     pub fn pending_timers(&self) -> usize {
         self.pending_timers.load(Ordering::Relaxed)
     }
 
+    /// Stops watching and closes the event channel.
     pub fn close(&mut self) {
         if self.closed.swap(true, Ordering::Relaxed) {
             return;
@@ -338,7 +342,7 @@ fn schedule(
     timers.insert(key, handle);
 }
 
-/// Pide una reconciliación completa; las peticiones dentro de la ventana se agrupan.
+/// Requests a full reconciliation; requests inside the window are coalesced.
 fn request_reconcile(
     slot: &mut Option<tokio::task::JoinHandle<()>>,
     tx: &mpsc::UnboundedSender<Input>,
@@ -353,12 +357,11 @@ fn request_reconcile(
     }));
 }
 
-/// Directorios vigilados y los que fallaron por el límite del SO.
+/// Watched directories and those rejected by the OS watch limit.
 #[derive(Default)]
 struct WatchState {
     watched: HashSet<PathBuf>,
     failed: HashSet<PathBuf>,
-    /// Último recuento avisado; evita repetir la misma línea.
     reported: usize,
 }
 
@@ -367,9 +370,9 @@ fn is_not_found(error: &notify::Error) -> bool {
         || matches!(&error.kind, notify::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound)
 }
 
-/// Re-registra todos los directorios (idempotente en inotify: un directorio
-/// borrado y recreado pierde su watch en el kernel) y descarta los que ya no
-/// existen. Devuelve, como mucho, un aviso por cambio en el recuento de fallos.
+/// Re-registers all directories (idempotent in inotify: a deleted and recreated
+/// directory loses its kernel watch) and drops those that no longer exist.
+/// Returns at most one warning per change in the failure count.
 fn apply_watches(
     state: &mut WatchState,
     dirs: &[PathBuf],
@@ -474,16 +477,13 @@ async fn reconcile<F>(
     *known = current;
 }
 
-/// Difusor de eventos y registro de cancelación de los streams SSE.
 pub struct SseHub {
     events: broadcast::Sender<DiskEvent>,
     cancels: StdMutex<std::collections::HashMap<u64, oneshot::Sender<()>>>,
-    /// Tras `cancel_all`, las suscripciones nuevas nacen ya canceladas.
     closed: std::sync::atomic::AtomicBool,
     next_id: std::sync::atomic::AtomicU64,
 }
 
-/// Elimina su registro de cancelación cuando el stream SSE se suelta.
 pub struct CancelGuard {
     hub: Arc<SseHub>,
     id: u64,
@@ -507,10 +507,12 @@ impl SseHub {
         }
     }
 
+    /// Subscribes to the raw event broadcaster.
     pub fn subscribe_events(&self) -> broadcast::Receiver<DiskEvent> {
         self.events.subscribe()
     }
 
+    /// Subscribes a new SSE stream to events and cancellation.
     pub fn subscribe(
         self: &Arc<Self>,
     ) -> (
@@ -523,8 +525,8 @@ impl SseHub {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut cancels) = self.cancels.lock() {
             if self.closed.load(Ordering::Acquire) {
-                // Llegó tras el cierre: sin esto el stream nunca terminaría y
-                // el apagado ordenado esperaría al cliente indefinidamente.
+                // Arrived after shutdown; without this the stream would never
+                // end and graceful shutdown would wait forever.
                 let _ = tx.send(());
             } else {
                 cancels.insert(id, tx);
@@ -540,6 +542,7 @@ impl SseHub {
         )
     }
 
+    /// Cancels all active SSE streams.
     pub fn cancel_all(&self) {
         if let Ok(mut cancels) = self.cancels.lock() {
             self.closed.store(true, Ordering::Release);
@@ -549,6 +552,7 @@ impl SseHub {
         }
     }
 
+    /// Number of registered SSE cancellation handles.
     pub fn pending_cancels(&self) -> usize {
         self.cancels
             .lock()
@@ -556,6 +560,7 @@ impl SseHub {
             .unwrap_or(0)
     }
 
+    /// Builds the SSE stream with events, heartbeats and cancellation.
     pub fn stream(
         &self,
         receiver: broadcast::Receiver<DiskEvent>,
@@ -572,7 +577,6 @@ impl SseHub {
     }
 }
 
-/// Stream manual: combina eventos, heartbeat `: ping` y cancelación sin dependencias extra.
 pub struct EventStream {
     events: BroadcastStream<DiskEvent>,
     heartbeat: Interval,
@@ -600,8 +604,8 @@ impl Stream for EventStream {
             Poll::Ready(Some(Err(
                 tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_),
             ))) => {
-                // El cliente perdió eventos: avisar para que reconsulte el estado,
-                // pero mantener la conexión abierta.
+                // The client missed events: ask it to resync while keeping the
+                // connection open.
                 return Poll::Ready(Some(Ok(Event::default().event("resync").data("{}"))));
             }
             Poll::Ready(None) => return Poll::Ready(None),
@@ -614,10 +618,10 @@ impl Stream for EventStream {
     }
 }
 
-/// Señales de apagado compartidas por el servidor real y la sonda de tests.
-/// Registra los manejadores de SIGINT/SIGTERM **ya** y devuelve el futuro que espera
-/// a cualquiera de ellos. Llamarla antes de anunciar que el servidor está listo evita
-/// que una señal temprana mate el proceso con la acción por defecto, sin apagado ordenado.
+/// Shutdown signals shared by the server and the test probe.
+/// Registers SIGINT/SIGTERM handlers now and returns a future for either signal.
+/// Calling it before announcing readiness prevents an early signal from killing
+/// the process with the default action instead of a graceful shutdown.
 pub fn install_shutdown_signals() -> impl std::future::Future<Output = ()> + Send + 'static {
     #[cfg(unix)]
     let (interrupt, terminate) = {
@@ -674,7 +678,7 @@ mod tests {
             }
         }
         assert_eq!(lines, 1);
-        // Si el recuento cambia, se avisa de nuevo.
+        // Warn again if the failure count changed.
         let fewer = &dirs[..50];
         assert!(apply_watches(&mut state, fewer, |_| Err(limit_error()), |_| {}).is_some());
     }
@@ -763,7 +767,7 @@ mod tests {
             "{rendered:?}"
         );
 
-        // El stream sigue abierto y entrega los eventos que quedaron en el buffer.
+        // The stream stays open and delivers events still buffered.
         let mut saw_normal = false;
         for _ in 0..8 {
             let event = stream

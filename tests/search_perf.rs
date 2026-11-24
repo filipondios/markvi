@@ -1,4 +1,4 @@
-//! Regresión de rendimiento: búsqueda sin resultados sobre ~94 MB debe ser rápida.
+//! Performance regression: a no-match search over ~94 MB must stay fast.
 use markvi_server::search::{search_markdown, ScanOptions};
 use std::{
     fs,

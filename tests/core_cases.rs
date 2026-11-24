@@ -1,4 +1,4 @@
-//! Casos de regresión del núcleo: normalización, rutas, wiki y hash.
+//! Core regression cases: normalization, paths, wiki links and hashing.
 use markvi_server::core::{hash, pure};
 use serde_json::{json, Value};
 

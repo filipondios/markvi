@@ -1,8 +1,8 @@
-//! Regresión de memoria: una línea con 10 000 enlaces no debe clonarse 10 000 veces.
-//! Binario propio para que VmHWM no se mezcle con otros tests del proceso.
+//! Memory regression: a line with 10,000 links must not be cloned 10,000 times.
+//! Dedicated binary so VmHWM is not mixed with other tests in the process.
 use markvi_server::{core::pure::WikiIndex, search};
 
-/// Pico de RSS en kB; 0 si no estamos en Linux.
+/// Peak RSS in kB; 0 outside Linux.
 fn peak_kb() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()

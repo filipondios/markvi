@@ -1,4 +1,4 @@
-//! El watcher no debe vigilar directorios ignorados, pero sí los nuevos normales.
+//! The watcher skips ignored directories but watches new normal ones.
 use markvi_server::watch::{DiskEvent, DiskEventKind, FileWatcher};
 use std::{
     fs,
@@ -34,7 +34,7 @@ impl Drop for Temp {
     }
 }
 
-/// Número total de watches inotify de este proceso (0 fuera de Linux).
+/// Total inotify watches for this process (0 outside Linux).
 fn inotify_watches() -> usize {
     let mut total = 0;
     if let Ok(fds) = fs::read_dir("/proc/self/fdinfo") {
@@ -99,8 +99,8 @@ async fn watcher_no_vigila_directorios_ignorados_pero_si_los_nuevos() {
         "el subdirectorio nuevo no notificó: {found:?}"
     );
 
-    // El evento anterior sale del diff de `reconcile` sobre el padre. Esta
-    // modificación solo se detecta si `notas/` está vigilado de verdad.
+    // The earlier event comes from `reconcile`'s diff on the parent. This
+    // write is only detected if `notas/` is genuinely watched.
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(sub.join("a.md"))

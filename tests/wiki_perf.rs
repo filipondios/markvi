@@ -1,4 +1,4 @@
-//! Regresión: `wiki_links` debe ser lineal aunque haya muchos candidatos fallidos.
+//! Regression: `wiki_links` must stay linear with many failed candidates.
 use markvi_server::core::pure::wiki_links;
 use std::time::Instant;
 

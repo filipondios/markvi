@@ -1,6 +1,5 @@
-//! Wyhash tal como lo implementa Zig `std.hash.Wyhash` (fuente oficial).
-//! `Bun.hash` equivale a esta función con seed 0; el crate `wyhash` de crates.io
-//! produce valores distintos y por eso no se usa.
+//! Zig's `std.hash.Wyhash` algorithm, from the official source.
+//! `Bun.hash` matches it with seed 0; the crates.io `wyhash` crate does not.
 
 const SECRET: [u64; 4] = [
     0xa0761d6478bd642f,
@@ -52,7 +51,7 @@ fn small_key(a: &mut u64, b: &mut u64, input: &[u8]) {
     }
 }
 
-/// Wyhash con `seed`, equivalente a `Zig std.hash.Wyhash.hash(seed, input)`.
+/// Wyhash with `seed`, matching `Zig std.hash.Wyhash.hash(seed, input)`.
 pub fn hash(seed: u64, input: &[u8]) -> u64 {
     let initial = seed ^ mix(seed ^ SECRET[0], SECRET[1]);
     let mut state = [initial, initial, initial];
@@ -70,7 +69,7 @@ pub fn hash(seed: u64, input: &[u8]) -> u64 {
             }
             state[0] ^= state[1] ^ state[2];
         }
-        // `final1`: bloques de 16 hasta dejar los últimos 16 bytes.
+        // `final1`: 16-byte blocks, leaving the last 16 bytes unread here.
         while i + 16 < input.len() {
             state[0] = mix(
                 read::<8>(&input[i..]) ^ SECRET[1],
@@ -78,8 +77,8 @@ pub fn hash(seed: u64, input: &[u8]) -> u64 {
             );
             i += 16;
         }
-        // Zig lee los últimos 16 bytes del buffer completo (pueden solaparse
-        // con bytes ya procesados si el resto es más corto que 16).
+        // Zig reads the final 16 bytes of the whole buffer; they may overlap
+        // bytes already consumed when the remainder is shorter than 16.
         a = read::<8>(&input[input.len() - 16..]);
         b = read::<8>(&input[input.len() - 8..]);
     }
@@ -90,7 +89,7 @@ pub fn hash(seed: u64, input: &[u8]) -> u64 {
     mix(a ^ SECRET[0] ^ input.len() as u64, b ^ SECRET[1])
 }
 
-/// ETag de Markvi: comillas + hex minúsculo sin ceros de relleno.
+/// Markvi ETag: quoted lowercase hex without padding.
 pub fn etag(content: &str) -> String {
     format!("\"{:x}\"", hash(0, content.as_bytes()))
 }
@@ -99,7 +98,7 @@ pub fn etag(content: &str) -> String {
 mod tests {
     use super::*;
 
-    // Vectores oficiales de https://github.com/ziglang/zig/blob/master/lib/std/hash/wyhash.zig
+    // Official vectors: https://github.com/ziglang/zig/blob/master/lib/std/hash/wyhash.zig
     #[test]
     fn zig_vectors() {
         let vectors: [(u64, u64, &str); 7] = [
@@ -124,7 +123,7 @@ mod tests {
         }
     }
 
-    // Medidos con Bun 1.4.4: Bun.hash === Bun.hash.wyhash.
+    // Measured with Bun 1.4.4: Bun.hash === Bun.hash.wyhash.
     #[test]
     fn bun_seed_zero() {
         assert_eq!(hash(0, b""), 0x409638ee2bde459);

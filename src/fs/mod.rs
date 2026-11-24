@@ -1,4 +1,4 @@
-//! Confinamiento al root y escrituras atómicas.
+//! Root confinement and atomic writes.
 
 use std::{
     collections::HashMap,
@@ -22,6 +22,7 @@ pub struct HttpError {
 }
 
 impl HttpError {
+    /// Creates an HTTP error with a status and message.
     pub fn new(status: u16, message: impl Into<String>) -> Self {
         Self {
             status,
@@ -71,7 +72,7 @@ fn resolve(root: &Path, path: &str) -> PathBuf {
     lexical(&target)
 }
 
-/// Componentes de `target` por debajo de `root`, o `None` si no está dentro.
+/// Components of `target` below `root`, or `None` if it escapes the root.
 pub fn segments_inside(root: &Path, target: &Path) -> Option<Vec<String>> {
     let root_parts: Vec<_> = root.components().collect();
     let target_parts: Vec<_> = target.components().collect();
@@ -96,13 +97,13 @@ fn check(root: &Path, target: &Path) -> FsResult<Vec<String>> {
     Ok(segments)
 }
 
-/// Lectura coherente con `GET`: bytes inválidos se sustituyen, no se omiten.
+/// Read behavior matching `GET`: invalid bytes are replaced, not dropped.
 pub async fn read_lossy(path: &Path) -> std::io::Result<String> {
     let bytes = tokio::fs::read(path).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Como `read_lossy`, indicando si hubo sustituciones (el archivo no era UTF-8 válido).
+/// Like `read_lossy`, also reporting whether bytes were replaced.
 pub async fn read_text(path: &Path) -> std::io::Result<(String, bool)> {
     let bytes = tokio::fs::read(path).await?;
     Ok(match String::from_utf8(bytes) {
@@ -111,7 +112,7 @@ pub async fn read_text(path: &Path) -> std::io::Result<(String, bool)> {
     })
 }
 
-/// `Ok(false)` si el archivo existe y no es UTF-8 válido; `NotFound` se propaga.
+/// `Ok(false)` if the file exists but is not valid UTF-8; `NotFound` is propagated.
 pub async fn is_valid_utf8(path: &Path) -> std::io::Result<bool> {
     let bytes = tokio::fs::read(path).await?;
     Ok(std::str::from_utf8(&bytes).is_ok())
@@ -133,6 +134,7 @@ fn name_of(path: &Path) -> OsString {
     path.file_name().unwrap_or_default().to_os_string()
 }
 
+/// Resolves an existing readable Markdown file inside the root.
 pub async fn resolve_file(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
     let path = path
         .filter(|p| !p.is_empty() && !p.contains('\0'))
@@ -150,6 +152,7 @@ pub async fn resolve_file(root: &Path, path: Option<&str>) -> FsResult<PathBuf> 
     Ok(real)
 }
 
+/// Resolves an existing entry inside the root.
 pub async fn resolve_entry(root: &Path, path: Option<&str>) -> FsResult<(PathBuf, PathBuf)> {
     let real = resolve_file(root, path).await?;
     let target = resolve(root, path.unwrap());
@@ -162,6 +165,7 @@ pub async fn resolve_entry(root: &Path, path: Option<&str>) -> FsResult<(PathBuf
     Ok((real, parent.join(name_of(&target))))
 }
 
+/// Resolves a path that is allowed for writing.
 pub async fn resolve_writable(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
     let path = path
         .filter(|p| !p.is_empty() && !p.contains('\0'))
@@ -188,6 +192,7 @@ pub async fn resolve_writable(root: &Path, path: Option<&str>) -> FsResult<PathB
     Ok(parent.join(name_of(&target)))
 }
 
+/// Resolves a path for a new file, rejecting existing or hidden paths.
 pub async fn resolve_new(root: &Path, path: Option<&str>) -> FsResult<PathBuf> {
     let path = path
         .filter(|p| !p.is_empty() && !p.contains('\0'))
@@ -256,10 +261,8 @@ fn relative_string(root: &Path, real: &Path) -> String {
         .join("/")
 }
 
-/// Resultado de un recorrido: archivos Markdown y directorios reales visibles.
 pub struct Walk {
     pub entries: Vec<MarkdownEntry>,
-    /// Directorios reales (sin seguir symlinks) que debe vigilar el watcher.
     pub dirs: Vec<PathBuf>,
 }
 
@@ -282,14 +285,14 @@ fn walk(real_root: &Path, root_dir: &Path, out: &mut Walk) {
             Ok(reader) => reader,
             Err(_) => continue,
         };
-        // Solo los directorios alcanzados sin symlinks (hops == 0) se vigilan.
+        // Only directories reached without symlinks (hops == 0) are watched.
         if frame.hops == 0 && seen_dirs.insert(frame.dir.clone()) {
             out.dirs.push(frame.dir.clone());
         }
         let mut names = Vec::new();
         for entry in reader.flatten() {
-            // Un nombre que no es UTF-8 válido no se puede direccionar por la API
-            // (la URL no lo representa): se omite, y con él su subárbol si es dir.
+            // A non-UTF-8 name cannot be addressed through the API, so it and
+            // its subtree are skipped.
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
@@ -392,8 +395,8 @@ fn walk(real_root: &Path, root_dir: &Path, out: &mut Walk) {
     }
 }
 
-/// Recorre el árbol una sola vez con `std::fs` en un hilo bloqueante (≈8× más
-/// rápido que una llamada async por entrada).
+/// Walks the tree once with `std::fs` on a blocking thread (about 8x faster
+/// than an async call per entry).
 pub async fn walk_tree(root: &Path) -> Walk {
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -412,10 +415,12 @@ pub async fn walk_tree(root: &Path) -> Walk {
     })
 }
 
+/// Lists Markdown files and real directories under the root.
 pub async fn list_markdown_entries(root: &Path) -> Vec<MarkdownEntry> {
     walk_tree(root).await.entries
 }
 
+/// Lists Markdown file paths under the root.
 pub async fn list_markdown(root: &Path) -> Vec<String> {
     list_markdown_entries(root)
         .await
@@ -424,6 +429,7 @@ pub async fn list_markdown(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Removes duplicate paths, keeping the first occurrence.
 pub fn unique_paths(entries: &[MarkdownEntry]) -> Vec<String> {
     let direct: std::collections::HashSet<&str> = entries
         .iter()
@@ -449,7 +455,7 @@ pub(crate) fn temp_path_for(target: &Path) -> PathBuf {
     if getrandom::fill(&mut seed).is_err() {
         eprintln!("getrandom falló; usando pid + contador para el archivo temporal");
     }
-    // Si getrandom falla, pid + contador evitan nombres predecibles y colisiones.
+    // If getrandom fails, pid + counter avoid predictable or colliding names.
     let extra = std::process::id() as u64
         ^ COUNTER
             .fetch_add(1, Ordering::Relaxed)
@@ -461,8 +467,8 @@ pub(crate) fn temp_path_for(target: &Path) -> PathBuf {
     parent_of(target).join(format!(".markvi-{hex}.tmp"))
 }
 
-/// Los `ErrorKind` son portables; el código numérico queda como respaldo en
-/// Unix, donde `PermissionDenied` y `Unsupported` no cubren todos los casos.
+/// `ErrorKind` is portable; numeric codes cover Unix cases that
+/// `PermissionDenied` and `Unsupported` do not represent.
 fn is_permission(error: &std::io::Error) -> bool {
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         return true;
@@ -477,7 +483,7 @@ fn is_permission(error: &std::io::Error) -> bool {
     }
 }
 
-/// Errores que indican "este sistema de archivos no admite enlaces duros".
+/// Errors indicating that the filesystem does not support hard links.
 pub fn hard_link_unsupported(error: &std::io::Error) -> bool {
     if matches!(
         error.kind(),
@@ -487,7 +493,7 @@ pub fn hard_link_unsupported(error: &std::io::Error) -> bool {
     ) {
         return true;
     }
-    // EPERM, EOPNOTSUPP/ENOTSUP, ENOSYS, EXDEV según el sistema (los números difieren).
+    // EPERM, EOPNOTSUPP/ENOTSUP, ENOSYS, EXDEV; codes vary by system.
     #[cfg(target_os = "linux")]
     {
         matches!(error.raw_os_error(), Some(1 | 95 | 38 | 18))
@@ -502,7 +508,7 @@ pub fn hard_link_unsupported(error: &std::io::Error) -> bool {
     }
 }
 
-/// Escritura directa de respaldo: si falla, no deja un archivo a medias.
+/// Fallback direct write: on failure it leaves no partially written file.
 async fn direct_create_with_cleanup<F, Fut>(target: &Path, write: F) -> std::io::Result<()>
 where
     F: FnOnce(tokio::fs::File) -> Fut,
@@ -510,8 +516,8 @@ where
 {
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    // Un AlreadyExists (o cualquier error de apertura) no nos da propiedad
-    // del target: en ese caso nunca debemos intentar eliminarlo.
+    // `AlreadyExists` (or any open error) gives us no ownership of the target;
+    // in that case we must never try to remove it.
     let handle = options.open(target).await?;
     if let Err(error) = write(handle).await {
         let _ = tokio::fs::remove_file(target).await;
@@ -568,6 +574,7 @@ async fn sync_directory(directory: &Path) {
     let _ = directory;
 }
 
+/// Writes a file atomically while preserving its mode.
 pub async fn write_file_atomic(target: &Path, data: &str) -> std::io::Result<()> {
     let mode = match tokio::fs::metadata(target).await {
         #[cfg(unix)]
@@ -591,6 +598,7 @@ pub async fn write_file_atomic(target: &Path, data: &str) -> std::io::Result<()>
     Ok(())
 }
 
+/// Creates a file only if it does not already exist.
 pub async fn create_file_exclusive(target: &Path, data: &str) -> std::io::Result<()> {
     let temp = write_temp(target, data, None).await?;
     let result = tokio::fs::hard_link(&temp, target).await;
@@ -618,13 +626,14 @@ pub struct Locks {
 }
 
 impl Locks {
+    /// Number of tasks currently waiting for a file lock.
     pub fn pending_locks(&self) -> usize {
         self.map.try_lock().map(|map| map.len()).unwrap_or(0)
     }
 }
 
-/// Clave estable: ruta canónica del archivo (o del padre si aún no existe),
-/// para que un symlink y su destino compartan candado.
+/// Stable key: canonical file path (or parent path if missing), so a symlink
+/// and its target share one lock.
 pub async fn lock_key(path: &Path) -> String {
     let resolved = match tokio::fs::canonicalize(path).await {
         Ok(path) => path,
@@ -638,8 +647,8 @@ pub async fn lock_key(path: &Path) -> String {
     resolved.to_string_lossy().into_owned()
 }
 
-/// Lanza la escritura en una tarea independiente: si el handler HTTP se cancela,
-/// la escritura termina y no deja temporales.
+/// Runs the write in a detached task: if the HTTP handler is cancelled, the
+/// write still finishes and leaves no temporary files.
 pub fn spawn_write(
     target: PathBuf,
     data: String,
@@ -654,6 +663,7 @@ pub fn spawn_write(
     })
 }
 
+/// Runs a task while holding the lock for `key`.
 pub async fn with_file_lock<F, T>(locks: &Locks, key: &str, task: F) -> T
 where
     F: Future<Output = T>,
@@ -668,7 +678,7 @@ where
     let guard = lock.lock().await;
     let output = task.await;
     drop(guard);
-    // Mapa + variable local: si no hay nadie más esperando, podamos la entrada.
+    // Map plus local flag: prune the entry when no other caller is waiting.
     if Arc::strong_count(&lock) == 2 {
         let mut map = locks.map.lock().await;
         if map
@@ -714,9 +724,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("nota.md");
 
-        // El handler se cancela: soltamos el JoinHandle sin esperarlo.
+        // The handler was cancelled: drop the JoinHandle without awaiting it.
         drop(spawn_write(target.clone(), "contenido".to_string(), false));
-        // Sondeo en vez de un sleep fijo: bajo carga la tarea puede tardar más.
+        // Poll instead of a fixed sleep: under load the task may take longer.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !target.exists() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -747,8 +757,7 @@ mod tests {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
 
-        // Esta tarea representa la sección crítica que ya no pertenece al
-        // ciclo de vida del handler HTTP.
+        // This task owns the critical section once the HTTP handler is gone.
         let handler_task = tokio::spawn(async move {
             with_file_lock(&task_locks, &key, async move {
                 let _ = started_tx.send(());
@@ -757,7 +766,7 @@ mod tests {
             }).await;
         });
         started_rx.await.unwrap();
-        drop(handler_task); // el cliente cancela el handler
+        drop(handler_task); // the handler was cancelled
 
         let second_locks = locks.clone();
         let second_target = target.clone();
@@ -765,7 +774,7 @@ mod tests {
         let second_put = tokio::spawn(async move {
             with_file_lock(&second_locks, &second_key, async move {
                 let current = tokio::fs::read_to_string(&second_target).await.unwrap();
-                // Equivale a If-Match con el ETag/contenido anterior.
+                // Equivalent to If-Match against the previous ETag/content.
                 assert_ne!(current, "antiguo");
                 current
             }).await

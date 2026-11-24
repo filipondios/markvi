@@ -1,4 +1,4 @@
-//! Núcleo Rust de Markvi.
+//! Backend library for Markvi: HTTP API, filesystem, search, watcher and helpers.
 
 pub mod api;
 pub mod config;

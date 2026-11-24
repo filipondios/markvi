@@ -1,5 +1,5 @@
-//! Validación de `config.toml`. Nunca lanza:
-//! lo inválido se ignora y se convierte en aviso observable en `/api/config`.
+//! `config.toml` validation. It never panics:
+//! invalid values are ignored and surfaced as warnings in `/api/config`.
 
 use crate::core::pure::{self, Config, LeaderBinding, Theme, VimContext, VimMapping};
 use serde::Serialize;
@@ -13,17 +13,16 @@ pub struct LoadedConfig {
     pub exists: bool,
 }
 
-/// Límite de lectura del archivo de configuración.
+/// Maximum bytes read from the configuration file.
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
-/// Ruta de la configuración. Vacía si no se puede localizar ningún directorio
-/// personal: en ese caso no se carga configuración (ver `load_config`).
+/// Resolves the config path from the flag, environment and home directory.
 pub fn resolve_config_path(flag: Option<&Path>, env: &[(String, String)]) -> PathBuf {
     #[allow(deprecated)]
     resolve_config_path_with_home(flag, env, std::env::home_dir())
 }
 
-/// Como `resolve_config_path`, con el directorio personal del sistema inyectado.
+/// Like `resolve_config_path`, with the system home directory injected.
 pub fn resolve_config_path_with_home(
     flag: Option<&Path>,
     env: &[(String, String)],
@@ -63,7 +62,7 @@ fn absolute_or_join(path: &Path) -> PathBuf {
     }
 }
 
-/// `\s` de JavaScript incluye U+FEFF, que `char::is_whitespace` no contempla.
+/// JavaScript `\s` includes U+FEFF, which `char::is_whitespace` omits.
 fn is_js_space(c: char) -> bool {
     c.is_whitespace() || c == '\u{feff}'
 }
@@ -76,6 +75,7 @@ fn parse_key(token: &str) -> Option<String> {
     (chars.len() == 1 && !token.chars().any(is_js_space)).then(|| token.to_string())
 }
 
+/// Parses a key sequence from a TOML string.
 pub fn parse_sequence(input: &str) -> Option<Vec<String>> {
     let text = input.trim();
     if text.is_empty() {
@@ -103,6 +103,7 @@ const GENERIC_FONTS: [&str; 5] = [
     "system-ui",
 ];
 
+/// Parses an optional font name.
 pub fn parse_font(input: &str) -> Option<String> {
     let mut names = Vec::new();
     for raw in input.split(',') {
@@ -143,7 +144,7 @@ fn table(value: &toml::Value) -> Option<&toml::Table> {
     value.as_table()
 }
 
-/// `Display` de `toml::Value` ya da el literal TOML (`"neon"`, `5`).
+/// `toml::Value`'s `Display` already yields the TOML literal (`"neon"`, `5`).
 fn show(value: &toml::Value) -> String {
     value.to_string()
 }
@@ -305,6 +306,7 @@ fn apply_vim(
     }
 }
 
+/// Validates raw TOML and returns config plus warnings.
 pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
     let mut config = pure::default_config();
     let mut warnings = Vec::new();
@@ -439,7 +441,7 @@ pub fn validate_config(raw: &toml::Table) -> (Config, Vec<String>) {
     (config, warnings)
 }
 
-/// Línea y columna (desde 1, en caracteres) de un desplazamiento en bytes.
+/// 1-based line and column (in characters) for a byte offset.
 fn line_column(text: &str, offset: usize) -> (usize, usize) {
     let mut end = offset.min(text.len());
     while !text.is_char_boundary(end) {
@@ -455,6 +457,7 @@ fn line_column(text: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
+/// Parses configuration text, falling back to defaults on error.
 pub fn parse_config(text: Option<&str>) -> (Config, Vec<String>) {
     let Some(text) = text else {
         return (pure::default_config(), Vec::new());
@@ -480,7 +483,7 @@ pub fn parse_config(text: Option<&str>) -> (Config, Vec<String>) {
     }
 }
 
-/// Lee como mucho `MAX_CONFIG_BYTES + 1` bytes: basta para saber si se pasa del tope.
+/// Reads `MAX_CONFIG_BYTES + 1` bytes: enough to detect an oversized file.
 async fn read_limited(path: &Path) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
     let file = tokio::fs::File::open(path).await?;
@@ -491,6 +494,7 @@ async fn read_limited(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Loads and validates the configuration file at `path`.
 pub async fn load_config(path: &Path) -> LoadedConfig {
     let path_string = path.to_string_lossy().into_owned();
     if path.as_os_str().is_empty() {
@@ -504,7 +508,7 @@ pub async fn load_config(path: &Path) -> LoadedConfig {
             exists: false,
         };
     }
-    // Distinguir "no existe" de "existe pero no se puede leer" es observable.
+    // "Missing" and "present but unreadable" are observably different states.
     let exists = tokio::fs::try_exists(path).await.unwrap_or(true);
     if !exists {
         return LoadedConfig {
